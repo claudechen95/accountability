@@ -50,6 +50,10 @@ function HabitForm({
   const [emoji, setEmoji] = useState(initial?.emoji ?? "");
   const [frequency, setFrequency] = useState<"daily" | "weekly">(initial?.frequency ?? "daily");
   const [targetCount, setTargetCount] = useState(initial?.targetCount ?? 1);
+  const [nudgeDays, setNudgeDays] = useState<number[]>(initial?.nudgeDays ?? []);
+
+  const toggleNudgeDay = (day: number) =>
+    setNudgeDays((prev) => prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,6 +64,7 @@ function HabitForm({
       emoji: emoji.trim() || "✓",
       frequency,
       targetCount,
+      nudgeDays: frequency === "weekly" ? nudgeDays : undefined,
     });
   };
 
@@ -130,6 +135,28 @@ function HabitForm({
           </button>
         </div>
       </div>
+
+      {frequency === "weekly" && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Nudge me on</p>
+          <div className="flex gap-1.5">
+            {["S","M","T","W","T","F","S"].map((label, day) => (
+              <button
+                key={day}
+                type="button"
+                onClick={() => toggleNudgeDay(day)}
+                className={`w-8 h-8 rounded-full text-xs font-medium transition-colors ${
+                  nudgeDays.includes(day)
+                    ? "bg-gray-900 text-white"
+                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2 pt-1">
         <button

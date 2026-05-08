@@ -4,6 +4,7 @@ export interface Goal {
   emoji: string;
   frequency: "daily" | "weekly";
   targetCount: number; // how many times per period
+  nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only (daily goals always nudge)
 }
 
 export interface CheckInRecord {

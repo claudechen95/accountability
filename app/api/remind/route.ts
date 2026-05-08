@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGoals, getCompletedThisPeriod } from "@/lib/kv";
+import { getGoals, getCompletedThisPeriod, getCheckInsForPeriod, getTodayDate } from "@/lib/kv";
 import { Redis } from "@upstash/redis";
 
 const kv = new Redis({
@@ -24,15 +24,27 @@ export async function GET() {
     return NextResponse.json({ sent: false, reason: "already sent today" });
   }
 
+  const todayDow = new Date(
+    new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date()) + "T12:00:00"
+  ).getDay();
+
   const goals = await getGoals();
   const incomplete = (
     await Promise.all(
-      goals
-        .filter((goal) => goal.frequency === "daily")
-        .map(async (goal) => {
+      goals.map(async (goal) => {
+        if (goal.frequency === "daily") {
           const completed = await getCompletedThisPeriod(goal);
           return completed < goal.targetCount ? goal : null;
-        })
+        }
+        if (goal.nudgeDays && goal.nudgeDays.includes(todayDow)) {
+          const [completed, todayCount] = await Promise.all([
+            getCompletedThisPeriod(goal),
+            getCheckInsForPeriod(goal.id, getTodayDate()),
+          ]);
+          return completed < goal.targetCount && todayCount === 0 ? goal : null;
+        }
+        return null;
+      })
     )
   ).filter(Boolean);
 
