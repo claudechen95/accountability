@@ -178,10 +178,8 @@ export async function undoCheckIn(goalId: string): Promise<{ count: number }> {
 
   // Remove the most recent history entry for today
   const historyKey = `history:${goalId}`;
-  const recent = await kv.lrange<string>(historyKey, 0, 99);
-  const toRemove = recent.find((entry) => {
-    try { return (JSON.parse(entry) as CheckInRecord).date === today; } catch { return false; }
-  });
+  const recent = await kv.lrange<CheckInRecord>(historyKey, 0, 99);
+  const toRemove = recent.find((entry) => entry?.date === today);
   if (toRemove) await kv.lrem(historyKey, 1, toRemove);
 
   return { count: Math.max(0, newCount) };
