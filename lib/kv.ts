@@ -175,13 +175,6 @@ export async function undoCheckIn(goalId: string): Promise<{ count: number }> {
   if (current <= 0) return { count: 0 };
 
   const newCount = await kv.decr(key);
-
-  // Remove the most recent history entry for today
-  const historyKey = `history:${goalId}`;
-  const recent = await kv.lrange<CheckInRecord>(historyKey, 0, 99);
-  const toRemove = recent.find((entry) => entry?.date === today);
-  if (toRemove) await kv.lrem(historyKey, 1, toRemove);
-
   return { count: Math.max(0, newCount) };
 }
 
@@ -202,27 +195,12 @@ export async function getHistory(
     ].join("-"));
   }
 
-  if (goal.frequency === "daily") {
-    const keys = labels.map((label) => `checkin:${goal.id}:${label}`);
-    const counts = await kv.mget<number[]>(...keys);
-    return labels.map((period, i) => {
-      const count = counts[i] ?? 0;
-      return { period, count, done: count >= goal.targetCount };
-    });
-  }
-
-  // Weekly goals: build daily grid from individual check-in records.
-  // This correctly handles both old data (stored under weekly keys) and new data,
-  // since every check-in pushes a record with an exact date to history:{goalId}.
-  const allRecords = await kv.lrange<CheckInRecord>(`history:${goal.id}`, 0, -1);
-  const countsByDate: Record<string, number> = {};
-  for (const r of allRecords) {
-    if (r.date) countsByDate[r.date] = (countsByDate[r.date] ?? 0) + 1;
-  }
-
-  return labels.map((period) => {
-    const count = countsByDate[period] ?? 0;
-    return { period, count, done: count >= 1 };
+  const keys = labels.map((label) => `checkin:${goal.id}:${label}`);
+  const counts = await kv.mget<number[]>(...keys);
+  return labels.map((period, i) => {
+    const count = counts[i] ?? 0;
+    const done = goal.frequency === "daily" ? count >= goal.targetCount : count >= 1;
+    return { period, count, done };
   });
 }
 
