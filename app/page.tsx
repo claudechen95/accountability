@@ -51,9 +51,12 @@ function HabitForm({
   const [frequency, setFrequency] = useState<"daily" | "weekly">(initial?.frequency ?? "daily");
   const [targetCount, setTargetCount] = useState(initial?.targetCount ?? 1);
   const [nudgeDays, setNudgeDays] = useState<number[]>(initial?.nudgeDays ?? []);
+  const [nudgeTime, setNudgeTime] = useState(initial?.nudgeTime ?? "21:00");
 
   const toggleNudgeDay = (day: number) =>
     setNudgeDays((prev) => prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]);
+
+  const nudgeActive = frequency === "daily" || (frequency === "weekly" && nudgeDays.length > 0);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,6 +68,7 @@ function HabitForm({
       frequency,
       targetCount,
       nudgeDays: frequency === "weekly" ? nudgeDays : undefined,
+      nudgeTime: nudgeActive ? nudgeTime : undefined,
     });
   };
 
@@ -155,6 +159,18 @@ function HabitForm({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {nudgeActive && (
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Reminder time (PST)</p>
+          <input
+            type="time"
+            value={nudgeTime}
+            onChange={(e) => setNudgeTime(e.target.value)}
+            className="border border-gray-200 rounded-xl px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-300"
+          />
         </div>
       )}
 

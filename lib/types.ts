@@ -5,6 +5,7 @@ export interface Goal {
   frequency: "daily" | "weekly";
   targetCount: number; // how many times per period
   nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only (daily goals always nudge)
+  nudgeTime?: string;  // "HH:MM" PST 24hr, default "21:00"
 }
 
 export interface CheckInRecord {
