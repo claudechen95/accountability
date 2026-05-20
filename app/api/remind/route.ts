@@ -11,11 +11,6 @@ function getTodayPST(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
 }
 
-function getCurrentPSTHour(): number {
-  const pst = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
-  return pst.getHours();
-}
-
 function getTodayDOW(): number {
   return new Date(
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date()) + "T12:00:00"
@@ -28,7 +23,6 @@ export async function GET() {
     return NextResponse.json({ error: "NTFY_ALAN_TOPIC not set" }, { status: 500 });
   }
 
-  const currentHour = getCurrentPSTHour();
   const todayDow = getTodayDOW();
   const today = getTodayPST();
 
@@ -49,10 +43,6 @@ export async function GET() {
   const sent: string[] = [];
 
   for (const goal of goals) {
-    // Check if this goal should nudge at the current hour (default 21:00)
-    const goalHour = goal.nudgeTime ? parseInt(goal.nudgeTime.split(":")[0], 10) : 21;
-    if (currentHour !== goalHour) continue;
-
     // Per-goal dedup — only nudge once per day
     const sentKey = `remind:sent:${goal.id}:${today}`;
     if (await kv.get(sentKey)) continue;
