@@ -253,6 +253,50 @@ async function getWeeklyStreak(goal: Goal): Promise<number> {
   return streak;
 }
 
+// --- Missed period detection ---
+
+function getLastPeriodDateStr(goal: Goal): string {
+  const today = getTodayDate();
+  const [y, m, d] = today.split("-").map(Number);
+  const ref = new Date(Date.UTC(y, m - 1, goal.frequency === "daily" ? d - 1 : d - 7, 12));
+  return [
+    ref.getUTCFullYear(),
+    String(ref.getUTCMonth() + 1).padStart(2, "0"),
+    String(ref.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+export function getLastPeriodKey(goal: Goal): string {
+  const dateStr = getLastPeriodDateStr(goal);
+  return goal.frequency === "daily" ? dateStr : getWeekKey(dateStr);
+}
+
+export async function getLastPeriodMissed(goal: Goal): Promise<boolean> {
+  const hasHistory = (await kv.llen(`history:${goal.id}`)) > 0;
+  if (!hasHistory) return false;
+
+  if (goal.frequency === "daily") {
+    const count = await getCheckInsForPeriod(goal.id, getLastPeriodDateStr(goal));
+    return count < goal.targetCount;
+  }
+
+  const daysCompleted = await getWeeklyDaysCompleted(
+    goal.id,
+    getWeekDatesForDate(getLastPeriodDateStr(goal))
+  );
+  return daysCompleted < goal.targetCount;
+}
+
+// --- Reflections ---
+
+export async function saveReflection(goalId: string, text: string): Promise<void> {
+  const goals = await getGoals();
+  const goal = goals.find((g) => g.id === goalId);
+  if (!goal) return;
+  const periodKey = getLastPeriodKey(goal);
+  await kv.set(`reflection:${goalId}:${periodKey}`, { text, savedAt: Date.now() });
+}
+
 // --- Weekly Notes ---
 
 export function getCurrentWeekKey(): string {

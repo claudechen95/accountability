@@ -194,6 +194,80 @@ function HabitForm({
   );
 }
 
+function ReflectionModal({
+  goal,
+  onSubmit,
+  onSkip,
+  onClose,
+}: {
+  goal: GoalStatus;
+  onSubmit: (text: string) => void;
+  onSkip: () => void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const today = getTodayPST();
+  const periodLabel =
+    goal.frequency === "daily"
+      ? (() => {
+          const yesterday = new Date(today);
+          yesterday.setDate(today.getDate() - 1);
+          return yesterday.toLocaleDateString("en-US", { weekday: "long" });
+        })()
+      : "Last week";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">{goal.emoji}</span>
+            <h2 className="text-base font-semibold text-gray-900">{goal.name}</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 transition-colors text-lg leading-none"
+          >
+            ✕
+          </button>
+        </div>
+
+        <p className="text-sm text-gray-700">
+          <span className="font-medium">{periodLabel}</span> you missed this.{" "}
+          What got in the way?
+        </p>
+
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Optional — just thinking out loud is enough"
+          rows={3}
+          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-gray-300"
+          autoFocus
+        />
+
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={() => onSubmit(text)}
+            className="w-full bg-gray-900 text-white rounded-xl py-2 text-sm font-medium hover:bg-gray-700 transition-colors"
+          >
+            {text.trim() ? "Save & Check In" : "Check In"}
+          </button>
+          <button
+            onClick={onSkip}
+            className="text-xs text-gray-400 hover:text-gray-600 underline transition-colors"
+          >
+            just check in, skip reflection
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GoalCard({
   goal,
   onCheckIn,
@@ -348,6 +422,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
 
   const fetchGoals = useCallback(async () => {
     try {
@@ -390,7 +465,7 @@ export default function HomePage() {
     return () => clearTimeout(timeout);
   }, [fetchGoals]);
 
-  const handleCheckIn = async (goalId: string) => {
+  const doCheckIn = async (goalId: string) => {
     setLoading(true);
     try {
       const res = await fetch("/api/checkins", {
@@ -405,6 +480,36 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCheckIn = (goalId: string) => {
+    const goal = goals.find((g) => g.id === goalId);
+    if (goal?.lastPeriodMissed && goal.completedThisPeriod === 0) {
+      setReflectionTarget(goal);
+    } else {
+      doCheckIn(goalId);
+    }
+  };
+
+  const handleReflectionSubmit = async (text: string) => {
+    if (!reflectionTarget) return;
+    const goalId = reflectionTarget.id;
+    setReflectionTarget(null);
+    if (text.trim()) {
+      await fetch("/api/reflections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goalId, text }),
+      });
+    }
+    await doCheckIn(goalId);
+  };
+
+  const handleReflectionSkip = async () => {
+    if (!reflectionTarget) return;
+    const goalId = reflectionTarget.id;
+    setReflectionTarget(null);
+    await doCheckIn(goalId);
   };
 
   const handleUndo = async (goalId: string) => {
@@ -543,6 +648,16 @@ export default function HomePage() {
             </button>
           )}
         </div>
+      )}
+
+      {/* Reflection modal */}
+      {reflectionTarget && (
+        <ReflectionModal
+          goal={reflectionTarget}
+          onSubmit={handleReflectionSubmit}
+          onSkip={handleReflectionSkip}
+          onClose={() => setReflectionTarget(null)}
+        />
       )}
 
       {/* Footer */}

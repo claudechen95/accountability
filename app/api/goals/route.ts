@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGoals, saveGoals, getCompletedThisPeriod, getStreak, getCheckInsForPeriod, getTodayDate } from "@/lib/kv";
+import { getGoals, saveGoals, getCompletedThisPeriod, getStreak, getCheckInsForPeriod, getTodayDate, getLastPeriodMissed } from "@/lib/kv";
 import type { GoalStatus } from "@/lib/types";
 
 export async function GET() {
@@ -8,15 +8,19 @@ export async function GET() {
 
     const statuses: GoalStatus[] = await Promise.all(
       goals.map(async (goal) => {
-        const completed = await getCompletedThisPeriod(goal);
-        const streak = await getStreak(goal);
-        const todayCount = await getCheckInsForPeriod(goal.id, getTodayDate());
+        const [completed, streak, todayCount, lastPeriodMissed] = await Promise.all([
+          getCompletedThisPeriod(goal),
+          getStreak(goal),
+          getCheckInsForPeriod(goal.id, getTodayDate()),
+          getLastPeriodMissed(goal),
+        ]);
         return {
           ...goal,
           completedThisPeriod: completed,
           isDone: completed >= goal.targetCount,
           streak,
           todayCount,
+          lastPeriodMissed,
         };
       })
     );

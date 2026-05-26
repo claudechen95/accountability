@@ -29,4 +29,5 @@ export interface GoalStatus extends Goal {
   isDone: boolean;
   streak: number;
   todayCount: number;
+  lastPeriodMissed: boolean;
 }
