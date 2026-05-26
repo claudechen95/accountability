@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGoals, getHistory, getCheckInRecords, getStreak } from "@/lib/kv";
+import { getGoals, getHistory, getStreak, getWeekKey, getReflectionsForGoal } from "@/lib/kv";
 
 export async function GET() {
   try {
@@ -7,12 +7,27 @@ export async function GET() {
 
     const history = await Promise.all(
       goals.map(async (goal) => {
-        const periods = 91; // 13 weeks of daily data for all goals
+        const periods = 91;
         const [entries, streak] = await Promise.all([
           getHistory(goal, periods),
           getStreak(goal),
         ]);
-        return { goal, entries, streak };
+
+        let reflections: Record<string, string> = {};
+        if (goal.frequency === "daily") {
+          reflections = await getReflectionsForGoal(goal.id, entries.map((e) => e.period));
+        } else {
+          const weekKeys = [...new Set(entries.map((e) => getWeekKey(e.period)))];
+          const weekReflections = await getReflectionsForGoal(goal.id, weekKeys);
+          for (const entry of entries) {
+            const wk = getWeekKey(entry.period);
+            if (weekReflections[wk] && !entry.done) {
+              reflections[entry.period] = weekReflections[wk];
+            }
+          }
+        }
+
+        return { goal, entries, streak, reflections };
       })
     );
 

@@ -20,6 +20,7 @@ interface GoalHistory {
   goal: Goal;
   entries: HistoryEntry[];
   streak: number;
+  reflections: Record<string, string>;
 }
 
 // --- Tooltip ---
@@ -28,7 +29,7 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
     <div className="relative group">
       {children}
       <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-10 pointer-events-none">
-        <div className="bg-gray-900 text-white text-[10px] rounded px-2 py-1 whitespace-nowrap">
+        <div className="bg-gray-900 text-white text-[10px] rounded px-2 py-1 whitespace-pre-line max-w-[180px] text-center">
           {text}
         </div>
       </div>
@@ -37,7 +38,7 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
 }
 
 // --- Daily calendar grid (13 weeks × 7 days) ---
-function DailyGrid({ entries, frequency }: { entries: HistoryEntry[]; frequency: "daily" | "weekly" }) {
+function DailyGrid({ entries, frequency, reflections }: { entries: HistoryEntry[]; frequency: "daily" | "weekly"; reflections: Record<string, string> }) {
   const today = getTodayPST();
 
   const firstDate = new Date((entries[0]?.period ?? today) + "T12:00:00");
@@ -87,17 +88,23 @@ function DailyGrid({ entries, frequency }: { entries: HistoryEntry[]; frequency:
                 }
                 const isFuture = entry.period > today;
                 const isToday = entry.period === today;
+                const reflection = !isFuture && !entry.done && !isToday ? reflections[entry.period] : undefined;
                 const color = isFuture
                   ? "bg-gray-100"
                   : entry.done
                   ? "bg-green-500"
+                  : reflection
+                  ? "bg-amber-300"
                   : "bg-gray-200";
                 const label = new Date(entry.period + "T12:00:00").toLocaleDateString("en-US", {
                   weekday: "short", month: "short", day: "numeric",
                 });
                 const status = isFuture || frequency === "weekly" ? "" : entry.done ? ` · ✓` : isToday ? "" : ` · ✗ missed`;
+                const tooltipText = reflection
+                  ? `${label}${status}\n"${reflection.length > 80 ? reflection.slice(0, 80) + "…" : reflection}"`
+                  : `${label}${status}`;
                 return (
-                  <Tooltip key={di} text={`${label}${status}`}>
+                  <Tooltip key={di} text={tooltipText}>
                     <div className={`w-3 h-3 rounded-sm ${color} transition-colors cursor-default`} />
                   </Tooltip>
                 );
@@ -107,11 +114,12 @@ function DailyGrid({ entries, frequency }: { entries: HistoryEntry[]; frequency:
         })}
       </div>
       <div className="flex items-center gap-2 mt-2 text-[10px] text-gray-400">
-        <span>Less</span>
         <div className="w-3 h-3 rounded-sm bg-gray-200" />
-        <div className="w-3 h-3 rounded-sm bg-green-300" />
+        <span>missed</span>
+        <div className="w-3 h-3 rounded-sm bg-amber-300" />
+        <span>reflected</span>
         <div className="w-3 h-3 rounded-sm bg-green-500" />
-        <span>More</span>
+        <span>done</span>
       </div>
     </div>
   );
@@ -127,7 +135,7 @@ function StatPill({ label, value }: { label: string; value: string | number }) {
 }
 
 function GoalHistoryCard({ goalHistory }: { goalHistory: GoalHistory }) {
-  const { goal, entries, streak } = goalHistory;
+  const { goal, entries, streak, reflections } = goalHistory;
   const today = getTodayPST();
   const doneCount = entries.filter((e) => e.done).length;
   const totalPast = entries.filter((e) => e.period <= today).length;
@@ -151,7 +159,7 @@ function GoalHistoryCard({ goalHistory }: { goalHistory: GoalHistory }) {
         <StatPill label="streak" value={streak > 0 ? `🔥 ${streak}` : "—"} />
       </div>
 
-      <DailyGrid entries={entries} frequency={goal.frequency} />
+      <DailyGrid entries={entries} frequency={goal.frequency} reflections={reflections} />
     </div>
   );
 }

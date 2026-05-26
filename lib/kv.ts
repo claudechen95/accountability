@@ -287,6 +287,22 @@ export async function getLastPeriodMissed(goal: Goal): Promise<boolean> {
   return daysCompleted < goal.targetCount;
 }
 
+export async function getReflectionsForGoal(
+  goalId: string,
+  periodKeys: string[]
+): Promise<Record<string, string>> {
+  if (periodKeys.length === 0) return {};
+  const values = await kv.mget<{ text: string; savedAt: number } | null>(
+    ...periodKeys.map((k) => `reflection:${goalId}:${k}`)
+  );
+  const result: Record<string, string> = {};
+  periodKeys.forEach((k, i) => {
+    const val = values[i];
+    if (val?.text) result[k] = val.text;
+  });
+  return result;
+}
+
 // --- Reflections ---
 
 export async function saveReflection(goalId: string, text: string): Promise<void> {
