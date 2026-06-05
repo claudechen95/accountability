@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { addMoodEntry, getMoodEntries, getAllMoodEntries, getTodayDate } from "@/lib/kv";
+import { addMoodEntry, getMoodEntries, getAllMoodEntries, deleteMoodEntry, getTodayDate } from "@/lib/kv";
 
 export async function GET(req: Request) {
   try {
@@ -28,5 +28,19 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Failed to save mood entry" }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const { id, date } = await req.json();
+    if (!id || !date) {
+      return NextResponse.json({ error: "id and date are required" }, { status: 400 });
+    }
+    await deleteMoodEntry(date, id);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Failed to delete mood entry" }, { status: 500 });
   }
 }

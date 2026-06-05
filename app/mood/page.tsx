@@ -45,15 +45,36 @@ function groupByDate(entries: MoodEntry[]): DayGroup[] {
 export default function MoodPage() {
   const [groups, setGroups] = useState<DayGroup[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
   const today = getTodayPST();
 
-  useEffect(() => {
+  const load = () => {
     fetch("/api/mood?date=all")
       .then((r) => r.json())
       .then((data: MoodEntry[]) => setGroups(groupByDate(data)))
       .catch(() => setGroups([]))
       .finally(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleDelete = async (entry: MoodEntry) => {
+    setDeletingId(entry.id);
+    setConfirmId(null);
+    await fetch("/api/mood", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: entry.id, date: entry.date }),
+    });
+    setDeletingId(null);
+    // Remove optimistically from state
+    setGroups((prev) =>
+      prev
+        .map((g) => ({ ...g, entries: g.entries.filter((e) => e.id !== entry.id) }))
+        .filter((g) => g.entries.length > 0)
+    );
+  };
 
   return (
     <main className="max-w-md mx-auto px-4 py-10">
@@ -98,6 +119,35 @@ export default function MoodPage() {
                         <p className="text-sm text-gray-400 italic">No note</p>
                       )}
                       <p className="text-[11px] text-gray-300 mt-1">{formatTime(entry.timestamp)}</p>
+                    </div>
+                    <div className="flex-shrink-0 flex items-center">
+                      {confirmId === entry.id ? (
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleDelete(entry)}
+                            disabled={deletingId === entry.id}
+                            className="text-xs text-red-500 hover:text-red-700 font-medium underline"
+                          >
+                            {deletingId === entry.id ? "…" : "delete"}
+                          </button>
+                          <button
+                            onClick={() => setConfirmId(null)}
+                            className="text-xs text-gray-400 hover:text-gray-600 underline"
+                          >
+                            cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmId(entry.id)}
+                          className="text-gray-300 hover:text-gray-500 transition-colors p-1"
+                          aria-label="Delete entry"
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                            <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193v-.443A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}

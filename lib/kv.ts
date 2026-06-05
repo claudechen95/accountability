@@ -401,6 +401,22 @@ export async function getMoodEntries(date: string): Promise<MoodEntry[]> {
   return raw.map((e) => (typeof e === "string" ? JSON.parse(e) : e));
 }
 
+export async function deleteMoodEntry(date: string, id: string): Promise<void> {
+  const raw = await kv.lrange<string | MoodEntry>(`mood:${date}`, 0, -1);
+  for (const item of raw) {
+    const entry: MoodEntry = typeof item === "string" ? JSON.parse(item) : item;
+    if (entry.id === id) {
+      // lrem removes all list elements equal to this value
+      await kv.lrem(`mood:${date}`, 1, item);
+      // Decrement the habit completion count for that day
+      const key = `checkin:emotional-checkin:${date}`;
+      const current = (await kv.get<number>(key)) ?? 0;
+      if (current > 0) await kv.decr(key);
+      return;
+    }
+  }
+}
+
 export async function getAllMoodEntries(limit = 90): Promise<MoodEntry[]> {
   const keys = await kv.keys("mood:*");
   if (keys.length === 0) return [];
