@@ -3,15 +3,48 @@
 import React, { useEffect, useState } from "react";
 import type { WeeklyNote } from "@/lib/types";
 
-function getWeekKey(offsetWeeks = 0): string {
-  const now = new Date();
-  const pst = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
-  pst.setDate(pst.getDate() - offsetWeeks * 7);
+const PST = "America/Los_Angeles";
+
+function getWeekKeyForDate(date: Date): string {
+  const pst = new Date(date.toLocaleString("en-US", { timeZone: PST }));
   const y = pst.getFullYear();
   const jan4 = new Date(y, 0, 4);
   const daysDiff = Math.floor((pst.getTime() - jan4.getTime()) / 86400000);
   const week = Math.ceil((daysDiff + jan4.getDay() + 1) / 7);
   return `${y}-W${String(week).padStart(2, "0")}`;
+}
+
+function getMondayOfWeek(weekKey: string): Date {
+  const [year, weekStr] = weekKey.split("-W");
+  const week = parseInt(weekStr, 10);
+  const jan4 = new Date(parseInt(year), 0, 4);
+  const daysToMonday = (jan4.getDay() + 6) % 7;
+  const firstMonday = new Date(jan4);
+  firstMonday.setDate(jan4.getDate() - daysToMonday);
+  const monday = new Date(firstMonday);
+  monday.setDate(firstMonday.getDate() + (week - 1) * 7);
+  return monday;
+}
+
+function weekLabel(weekKey: string): string {
+  const monday = getMondayOfWeek(weekKey);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const fmt = (d: Date) =>
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(monday)} – ${fmt(sunday)}`;
+}
+
+// Returns the last N week keys ending at the current week, newest first
+function recentWeekOptions(n = 6): { key: string; label: string; rel: string }[] {
+  const now = new Date();
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i * 7);
+    const key = getWeekKeyForDate(d);
+    const rel = i === 0 ? "This week" : i === 1 ? "Last week" : `${i} weeks ago`;
+    return { key, label: weekLabel(key), rel };
+  });
 }
 
 // --- Note Form ---
@@ -58,6 +91,9 @@ function NoteForm({
 
   return (
     <form onSubmit={handleSubmit} className="rounded-2xl border border-indigo-200 bg-white shadow-sm p-5 space-y-4">
+      <p className="text-xs font-semibold text-indigo-500 uppercase tracking-wide">
+        {weekLabel(weekKey)}
+      </p>
       <input
         type="text"
         placeholder="Headline"
@@ -111,6 +147,47 @@ function NoteForm({
         </button>
       </div>
     </form>
+  );
+}
+
+// --- Week picker ---
+function WeekPicker({
+  existingWeeks,
+  onPick,
+  onCancel,
+}: {
+  existingWeeks: Set<string>;
+  onPick: (weekKey: string) => void;
+  onCancel: () => void;
+}) {
+  const options = recentWeekOptions(6);
+  return (
+    <div className="rounded-2xl border border-indigo-200 bg-white shadow-sm p-5 space-y-3 mb-4">
+      <p className="text-sm font-semibold text-gray-700">Which week are you writing about?</p>
+      <div className="space-y-2">
+        {options.map(({ key, label, rel }) => {
+          const hasNote = existingWeeks.has(key);
+          return (
+            <button
+              key={key}
+              onClick={() => onPick(key)}
+              className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/40 transition-colors text-left"
+            >
+              <div>
+                <span className="text-sm font-medium text-gray-800">{rel}</span>
+                <span className="text-xs text-gray-400 ml-2">{label}</span>
+              </div>
+              {hasNote && (
+                <span className="text-[10px] text-indigo-400 font-medium">has note</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <button onClick={onCancel} className="text-xs text-gray-400 hover:text-gray-600 underline w-full text-center pt-1">
+        cancel
+      </button>
+    </div>
   );
 }
 
@@ -180,7 +257,8 @@ export default function NotesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editingWeek, setEditingWeek] = useState<string | null>(null);
-  const [addingNew, setAddingNew] = useState(false);
+  const [pickingWeek, setPickingWeek] = useState(false);
+  const [newWeekKey, setNewWeekKey] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -193,17 +271,25 @@ export default function NotesPage() {
 
   useEffect(() => { load(); }, []);
 
-  const currentWeek = getWeekKey();
+  const existingWeeks = new Set(notes.map((n) => n.week));
+
+  const handlePickWeek = (weekKey: string) => {
+    setPickingWeek(false);
+    // If a note already exists for this week, edit it instead
+    if (existingWeeks.has(weekKey)) {
+      setEditingWeek(weekKey);
+    } else {
+      setNewWeekKey(weekKey);
+    }
+  };
 
   return (
     <main className="max-w-md mx-auto px-4 py-10">
       <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold text-gray-900">Weekly Notes</h1>
-        </div>
-        {!addingNew && (
+        <h1 className="text-2xl font-bold text-gray-900">Weekly Notes</h1>
+        {!pickingWeek && !newWeekKey && (
           <button
-            onClick={() => { setAddingNew(true); setEditingWeek(null); }}
+            onClick={() => { setPickingWeek(true); setEditingWeek(null); }}
             className="text-sm text-indigo-500 hover:text-indigo-700 underline"
           >
             + new note
@@ -211,12 +297,20 @@ export default function NotesPage() {
         )}
       </div>
 
-      {addingNew && (
+      {pickingWeek && (
+        <WeekPicker
+          existingWeeks={existingWeeks}
+          onPick={handlePickWeek}
+          onCancel={() => setPickingWeek(false)}
+        />
+      )}
+
+      {newWeekKey && (
         <div className="mb-4">
           <NoteForm
-            weekKey={currentWeek}
-            onSave={() => { setAddingNew(false); load(); }}
-            onCancel={() => setAddingNew(false)}
+            weekKey={newWeekKey}
+            onSave={() => { setNewWeekKey(null); load(); }}
+            onCancel={() => setNewWeekKey(null)}
           />
         </div>
       )}
@@ -237,7 +331,7 @@ export default function NotesPage() {
         <div className="text-center py-12">
           <div className="text-4xl mb-3">📝</div>
           <p className="text-gray-500">No weekly notes yet.</p>
-          <p className="text-sm text-gray-400 mt-1">Notes will appear here after your weekly sync.</p>
+          <p className="text-sm text-gray-400 mt-1">Tap "+ new note" to add your first reflection.</p>
         </div>
       )}
 
@@ -256,7 +350,7 @@ export default function NotesPage() {
               <NoteCard
                 key={note.week}
                 note={note}
-                onEdit={() => { setEditingWeek(note.week); setAddingNew(false); }}
+                onEdit={() => { setEditingWeek(note.week); setNewWeekKey(null); setPickingWeek(false); }}
               />
             )
           )}
