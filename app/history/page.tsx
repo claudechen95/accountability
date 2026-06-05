@@ -41,6 +41,7 @@ function RetroLogModal({
   period,
   goalName,
   goalEmoji,
+  reflection,
   onConfirm,
   onCancel,
   saving,
@@ -48,6 +49,7 @@ function RetroLogModal({
   period: string;
   goalName: string;
   goalEmoji: string;
+  reflection?: string;
   onConfirm: () => void;
   onCancel: () => void;
   saving: boolean;
@@ -59,18 +61,28 @@ function RetroLogModal({
   });
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
       onClick={(e) => e.target === e.currentTarget && onCancel()}
     >
-      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-2xl bg-white shadow-xl pt-5 pb-8 px-5 sm:pb-5 space-y-4">
+        <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden" />
         <div className="flex items-center gap-2">
           <span className="text-2xl">{goalEmoji}</span>
-          <h2 className="text-base font-semibold text-gray-900">{goalName}</h2>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">{goalName}</h2>
+            <p className="text-xs text-gray-400">{dateLabel}</p>
+          </div>
         </div>
-        <p className="text-sm text-gray-700">
-          Log <span className="font-medium">{dateLabel}</span> as completed?
-        </p>
-        <p className="text-xs text-gray-400">Use this if you did it but forgot to log at the time.</p>
+        {reflection && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+            <p className="text-xs font-medium text-amber-600 uppercase tracking-wide mb-1">Your reflection</p>
+            <p className="text-sm text-gray-700 leading-snug">"{reflection}"</p>
+          </div>
+        )}
+        <div className="space-y-1">
+          <p className="text-sm text-gray-700">Mark this day as completed?</p>
+          <p className="text-xs text-gray-400">Use this if you did it but forgot to log at the time.</p>
+        </div>
         <div className="flex gap-2">
           <button
             onClick={onConfirm}
@@ -250,6 +262,7 @@ interface RetroTarget {
   goalName: string;
   goalEmoji: string;
   period: string;
+  reflection?: string;
 }
 
 export default function HistoryPage() {
@@ -272,7 +285,13 @@ export default function HistoryPage() {
   const handleRetroLog = (goalId: string, period: string) => {
     const gh = history.find((h) => h.goal.id === goalId);
     if (!gh) return;
-    setRetroTarget({ goalId, period, goalName: gh.goal.name, goalEmoji: gh.goal.emoji });
+    setRetroTarget({
+      goalId,
+      period,
+      goalName: gh.goal.name,
+      goalEmoji: gh.goal.emoji,
+      reflection: gh.reflections[period],
+    });
   };
 
   const confirmRetroLog = async () => {
@@ -325,6 +344,7 @@ export default function HistoryPage() {
           period={retroTarget.period}
           goalName={retroTarget.goalName}
           goalEmoji={retroTarget.goalEmoji}
+          reflection={retroTarget.reflection}
           onConfirm={confirmRetroLog}
           onCancel={() => setRetroTarget(null)}
           saving={retroSaving}
