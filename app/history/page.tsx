@@ -54,6 +54,11 @@ function RetroLogModal({
   onCancel: () => void;
   saving: boolean;
 }) {
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+
   const dateLabel = new Date(period + "T12:00:00").toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",

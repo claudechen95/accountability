@@ -205,6 +205,10 @@ function ReflectionModal({
   onClose: () => void;
 }) {
   const [text, setText] = useState("");
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
   const today = getTodayPST();
   const periodLabel =
     goal.frequency === "daily"
@@ -406,6 +410,10 @@ function MoodModal({
   const [text, setText] = useState("");
   const [customMode, setCustomMode] = useState(false);
   const [customEmotion, setCustomEmotion] = useState("");
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
 
   const effectiveEmoji = customMode ? customEmotion.trim() : selectedEmoji;
 
