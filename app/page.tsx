@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { version } from "@/version.json";
+import versionData from "@/version.json";
 import type { Goal, GoalStatus } from "@/lib/types";
 
 const PST = "America/Los_Angeles";
@@ -813,20 +813,28 @@ export default function HomePage() {
 
   const allDone = goals.length > 0 && goals.every((g) => g.isDone);
 
+  const updatedLabel = new Date(versionData.updatedAt + "T12:00:00").toLocaleDateString("en-US", {
+    month: "short", day: "numeric",
+  });
+
   return (
     <main className="max-w-md mx-auto px-4 py-10">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">
-          Hey Alan 👋
-        </h1>
-        <p className="text-gray-500 mt-1">
-          {getTodayPST().toLocaleDateString("en-US", {
-            weekday: "long",
-            month: "long",
-            day: "numeric",
-          })}
-        </p>
+      <div className="flex items-start justify-between mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Hey Alan 👋</h1>
+          <p className="text-gray-500 mt-1">
+            {getTodayPST().toLocaleDateString("en-US", {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+            })}
+          </p>
+        </div>
+        <div className="text-right mt-1">
+          <p className="text-xs font-semibold text-gray-400">v{versionData.version}</p>
+          <p className="text-[11px] text-gray-300">updated {updatedLabel}</p>
+        </div>
       </div>
 
       {/* All done banner */}
@@ -914,10 +922,6 @@ export default function HomePage() {
         />
       )}
 
-      {/* Footer */}
-      <div className="flex justify-center mt-6">
-        <span className="text-xs text-gray-300">v{version}</span>
-      </div>
     </main>
   );
 }
