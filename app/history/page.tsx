@@ -66,11 +66,10 @@ function RetroLogModal({
   });
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
       onClick={(e) => e.target === e.currentTarget && onCancel()}
     >
-      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-2xl bg-white shadow-xl pt-5 pb-8 px-5 sm:pb-5 space-y-4">
-        <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden" />
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
         <div className="flex items-center gap-2">
           <span className="text-2xl">{goalEmoji}</span>
           <div>
