@@ -17,7 +17,9 @@ export async function GET() {
         if (goal.frequency === "daily") {
           reflections = await getReflectionsForGoal(goal.id, entries.map((e) => e.period));
         } else {
-          const weekKeys = [...new Set(entries.map((e) => getWeekKey(e.period)))];
+          const weekKeySet: Record<string, true> = {};
+          for (const e of entries) weekKeySet[getWeekKey(e.period)] = true;
+          const weekKeys = Object.keys(weekKeySet);
           const weekReflections = await getReflectionsForGoal(goal.id, weekKeys);
           // Only attach a weekly reflection to the last missed day of that week,
           // so the same text doesn't appear on every missed cell in the week.

@@ -303,9 +303,9 @@ export async function getReflectionsForGoal(
   periodKeys: string[]
 ): Promise<Record<string, string>> {
   if (periodKeys.length === 0) return {};
-  const values = await kv.mget<{ text: string; savedAt: number } | null>(
+  const values = (await kv.mget(
     ...periodKeys.map((k) => `reflection:${goalId}:${k}`)
-  );
+  )) as ({ text: string; savedAt: number } | null)[];
   const result: Record<string, string> = {};
   periodKeys.forEach((k, i) => {
     const val = values[i];
