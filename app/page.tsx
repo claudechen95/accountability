@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { version } from "@/version.json";
 import type { Goal, GoalStatus } from "@/lib/types";
 
@@ -292,17 +292,51 @@ const WHEEL_EMOTIONS = [
 
 function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emoji: string) => void }) {
   const [hovered, setHovered] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
   const size = 260;
   const center = size / 2;
   const radius = 100;
   const n = WHEEL_EMOTIONS.length;
 
-  // Hover takes precedence for preview; selected is the confirmed pick
   const displayEmotion = WHEEL_EMOTIONS.find((e) => e.emoji === (hovered || selected));
   const isPreview = !!hovered && hovered !== selected;
 
+  // Find which emotion button is under a touch point
+  const emojiAtPoint = (x: number, y: number): string | null => {
+    const el = document.elementFromPoint(x, y);
+    let target: Element | null = el;
+    while (target && target !== containerRef.current) {
+      const v = target.getAttribute("data-emoji");
+      if (v) return v;
+      target = target.parentElement;
+    }
+    return null;
+  };
+
+  // Wire up non-passive touchmove so we can track the sliding finger
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onMove = (e: TouchEvent) => {
+      const t = e.touches[0];
+      setHovered(emojiAtPoint(t.clientX, t.clientY) ?? "");
+    };
+    const onEnd = () => {
+      setHovered((prev) => {
+        if (prev) onSelect(prev);
+        return "";
+      });
+    };
+    el.addEventListener("touchmove", onMove, { passive: true });
+    el.addEventListener("touchend", onEnd);
+    return () => {
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+    };
+  }, [onSelect]);
+
   return (
-    <div className="relative mx-auto flex-shrink-0" style={{ width: size, height: size }}>
+    <div ref={containerRef} className="relative mx-auto flex-shrink-0" style={{ width: size, height: size }}>
       {/* Ring guide */}
       <div
         className="absolute rounded-full border border-gray-100"
@@ -313,20 +347,20 @@ function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emo
           top: center - radius - 18,
         }}
       />
-      {/* Center — shows hovered label as preview, selected as confirmed */}
+      {/* Center label */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <div className="text-center px-4">
           {displayEmotion ? (
             <>
-              <div className={`text-3xl leading-none transition-opacity ${isPreview ? "opacity-40" : ""}`}>
+              <div className={`text-3xl leading-none transition-all duration-150 ${isPreview ? "scale-125" : ""}`}>
                 {displayEmotion.emoji}
               </div>
-              <div className={`text-xs font-semibold mt-1 transition-colors ${isPreview ? "text-gray-400" : "text-gray-700"}`}>
+              <div className={`text-xs font-semibold mt-1 transition-colors ${isPreview ? "text-gray-600" : "text-gray-700"}`}>
                 {displayEmotion.label}
               </div>
             </>
           ) : (
-            <div className="text-[10px] text-gray-300 leading-tight text-center">tap an<br />emotion</div>
+            <div className="text-[10px] text-gray-300 leading-tight text-center">slide to<br />explore</div>
           )}
         </div>
       </div>
@@ -340,15 +374,16 @@ function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emo
         return (
           <button
             key={emotion.emoji}
+            data-emoji={emotion.emoji}
             onClick={() => onSelect(emotion.emoji)}
             onMouseEnter={() => setHovered(emotion.emoji)}
             onMouseLeave={() => setHovered("")}
-            className={`absolute flex items-center justify-center rounded-full text-xl transition-all duration-100 -translate-x-1/2 -translate-y-1/2 ${
+            className={`absolute flex items-center justify-center rounded-full transition-all duration-100 -translate-x-1/2 -translate-y-1/2 ${
               isSelected
-                ? "w-10 h-10 bg-indigo-100 ring-2 ring-indigo-400 scale-110 z-10"
+                ? "w-11 h-11 text-2xl bg-indigo-100 ring-2 ring-indigo-400 z-10"
                 : isHovered
-                ? "w-10 h-10 bg-gray-100 scale-110"
-                : "w-9 h-9"
+                ? "w-11 h-11 text-2xl bg-gray-100 z-10"
+                : "w-9 h-9 text-xl"
             }`}
             style={{ left: x, top: y }}
           >
@@ -370,14 +405,14 @@ function MoodModal({
   const [selectedEmoji, setSelectedEmoji] = useState("");
   const [text, setText] = useState("");
   const [customMode, setCustomMode] = useState(false);
-  const [customEmoji, setCustomEmoji] = useState("");
+  const [customEmotion, setCustomEmotion] = useState("");
 
-  const effectiveEmoji = customMode ? customEmoji.trim() : selectedEmoji;
+  const effectiveEmoji = customMode ? customEmotion.trim() : selectedEmoji;
 
   function handleWheelSelect(emoji: string) {
     setSelectedEmoji(emoji);
     setCustomMode(false);
-    setCustomEmoji("");
+    setCustomEmotion("");
   }
 
   return (
@@ -405,23 +440,23 @@ function MoodModal({
         <EmotionWheel selected={customMode ? "" : selectedEmoji} onSelect={handleWheelSelect} />
 
         {customMode ? (
-          <div className="flex items-center gap-2">
+          <div className="space-y-1">
             <input
               type="text"
-              value={customEmoji}
-              onChange={(e) => setCustomEmoji(e.target.value.slice(0, 2))}
-              placeholder="emoji"
-              className="w-20 border border-indigo-300 rounded-xl px-3 py-2 text-center text-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+              value={customEmotion}
+              onChange={(e) => setCustomEmotion(e.target.value)}
+              placeholder="describe the feeling in your own words…"
+              className="w-full border border-indigo-300 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300"
               autoFocus
             />
-            <span className="text-xs text-gray-400">or tap wheel to pick</span>
+            <p className="text-[11px] text-gray-400 text-center">or tap the wheel to pick an emotion</p>
           </div>
         ) : (
           <button
             onClick={() => { setCustomMode(true); setSelectedEmoji(""); }}
             className="text-xs text-gray-400 hover:text-indigo-500 underline w-full text-center"
           >
-            something else?
+            not in the wheel?
           </button>
         )}
 

@@ -111,7 +111,13 @@ export default function MoodPage() {
                     key={entry.id}
                     className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex items-start gap-3"
                   >
-                    <span className="text-3xl leading-none mt-0.5">{entry.emoji}</span>
+                    {/^[\x20-\x7E]+$/.test(entry.emoji) ? (
+                      <span className="flex-shrink-0 mt-0.5 px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-600 text-xs font-medium leading-snug max-w-[80px] text-center">
+                        {entry.emoji}
+                      </span>
+                    ) : (
+                      <span className="text-3xl leading-none mt-0.5 flex-shrink-0">{entry.emoji}</span>
+                    )}
                     <div className="flex-1 min-w-0">
                       {entry.text ? (
                         <p className="text-sm text-gray-800 leading-snug">{entry.text}</p>
