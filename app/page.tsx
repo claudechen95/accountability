@@ -410,15 +410,11 @@ function MoodModal({
               type="text"
               value={customEmoji}
               onChange={(e) => setCustomEmoji(e.target.value.slice(0, 2))}
-              placeholder="your emoji"
-              className="w-24 border border-indigo-300 rounded-xl px-3 py-2 text-center text-2xl focus:outline-none focus:ring-2 focus:ring-indigo-300"
+              placeholder="paste emoji"
+              className="w-24 border border-indigo-300 rounded-xl px-3 py-2 text-center text-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+              autoFocus
             />
-            <button
-              onClick={() => { setCustomMode(false); setCustomEmoji(""); }}
-              className="text-xs text-gray-400 hover:text-gray-600 underline"
-            >
-              back to wheel
-            </button>
+            <span className="text-xs text-gray-400">or tap wheel to pick</span>
           </div>
         ) : (
           <button
