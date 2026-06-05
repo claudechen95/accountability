@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import Link from "next/link";
+import React, { useEffect, useState, useCallback } from "react";
 import type { Goal } from "@/lib/types";
 
 const PST = "America/Los_Angeles";
@@ -37,8 +36,73 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
   );
 }
 
+// --- Retroactive log confirmation modal ---
+function RetroLogModal({
+  period,
+  goalName,
+  goalEmoji,
+  onConfirm,
+  onCancel,
+  saving,
+}: {
+  period: string;
+  goalName: string;
+  goalEmoji: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  const dateLabel = new Date(period + "T12:00:00").toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      onClick={(e) => e.target === e.currentTarget && onCancel()}
+    >
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <span className="text-2xl">{goalEmoji}</span>
+          <h2 className="text-base font-semibold text-gray-900">{goalName}</h2>
+        </div>
+        <p className="text-sm text-gray-700">
+          Log <span className="font-medium">{dateLabel}</span> as completed?
+        </p>
+        <p className="text-xs text-gray-400">Use this if you did it but forgot to log at the time.</p>
+        <div className="flex gap-2">
+          <button
+            onClick={onConfirm}
+            disabled={saving}
+            className="flex-1 bg-gray-900 text-white rounded-xl py-2 text-sm font-medium hover:bg-gray-700 disabled:opacity-50 transition-colors"
+          >
+            {saving ? "Logging…" : "Yes, log it"}
+          </button>
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Daily calendar grid (13 weeks × 7 days) ---
-function DailyGrid({ entries, frequency, reflections }: { entries: HistoryEntry[]; frequency: "daily" | "weekly"; reflections: Record<string, string> }) {
+function DailyGrid({
+  entries,
+  frequency,
+  reflections,
+  onRetroLog,
+}: {
+  entries: HistoryEntry[];
+  frequency: "daily" | "weekly";
+  reflections: Record<string, string>;
+  onRetroLog?: (period: string) => void;
+}) {
   const today = getTodayPST();
 
   const firstDate = new Date((entries[0]?.period ?? today) + "T12:00:00");
@@ -88,7 +152,8 @@ function DailyGrid({ entries, frequency, reflections }: { entries: HistoryEntry[
                 }
                 const isFuture = entry.period > today;
                 const isToday = entry.period === today;
-                const reflection = !isFuture && !entry.done && !isToday ? reflections[entry.period] : undefined;
+                const isMissed = !isFuture && !isToday && !entry.done;
+                const reflection = isMissed ? reflections[entry.period] : undefined;
                 const color = isFuture
                   ? "bg-gray-100"
                   : entry.done
@@ -100,12 +165,17 @@ function DailyGrid({ entries, frequency, reflections }: { entries: HistoryEntry[
                   weekday: "short", month: "short", day: "numeric",
                 });
                 const status = isFuture || frequency === "weekly" ? "" : entry.done ? ` · ✓` : isToday ? "" : ` · ✗ missed`;
+                const retroHint = isMissed && onRetroLog ? "\ntap to log retroactively" : "";
                 const tooltipText = reflection
-                  ? `${label}${status}\n"${reflection.length > 80 ? reflection.slice(0, 80) + "…" : reflection}"`
-                  : `${label}${status}`;
+                  ? `${label}${status}\n"${reflection.length > 80 ? reflection.slice(0, 80) + "…" : reflection}"${retroHint}`
+                  : `${label}${status}${retroHint}`;
+                const clickable = isMissed && !!onRetroLog;
                 return (
                   <Tooltip key={di} text={tooltipText}>
-                    <div className={`w-3 h-3 rounded-sm ${color} transition-colors cursor-default`} />
+                    <div
+                      className={`w-3 h-3 rounded-sm ${color} transition-colors ${clickable ? "cursor-pointer hover:opacity-70 active:scale-90" : "cursor-default"}`}
+                      onClick={() => clickable && onRetroLog!(entry.period)}
+                    />
                   </Tooltip>
                 );
               })}
@@ -134,7 +204,13 @@ function StatPill({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-function GoalHistoryCard({ goalHistory }: { goalHistory: GoalHistory }) {
+function GoalHistoryCard({
+  goalHistory,
+  onRetroLog,
+}: {
+  goalHistory: GoalHistory;
+  onRetroLog: (goalId: string, period: string) => void;
+}) {
   const { goal, entries, streak, reflections } = goalHistory;
   const today = getTodayPST();
   const doneCount = entries.filter((e) => e.done).length;
@@ -159,17 +235,31 @@ function GoalHistoryCard({ goalHistory }: { goalHistory: GoalHistory }) {
         <StatPill label="streak" value={streak > 0 ? `🔥 ${streak}` : "—"} />
       </div>
 
-      <DailyGrid entries={entries} frequency={goal.frequency} reflections={reflections} />
+      <DailyGrid
+        entries={entries}
+        frequency={goal.frequency}
+        reflections={reflections}
+        onRetroLog={(period) => onRetroLog(goal.id, period)}
+      />
     </div>
   );
+}
+
+interface RetroTarget {
+  goalId: string;
+  goalName: string;
+  goalEmoji: string;
+  period: string;
 }
 
 export default function HistoryPage() {
   const [history, setHistory] = useState<GoalHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retroTarget, setRetroTarget] = useState<RetroTarget | null>(null);
+  const [retroSaving, setRetroSaving] = useState(false);
 
-  useEffect(() => {
+  const loadHistory = useCallback(() => {
     fetch("/api/history")
       .then((r) => r.json())
       .then((data) => setHistory(data))
@@ -177,15 +267,34 @@ export default function HistoryPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  const handleRetroLog = (goalId: string, period: string) => {
+    const gh = history.find((h) => h.goal.id === goalId);
+    if (!gh) return;
+    setRetroTarget({ goalId, period, goalName: gh.goal.name, goalEmoji: gh.goal.emoji });
+  };
+
+  const confirmRetroLog = async () => {
+    if (!retroTarget) return;
+    setRetroSaving(true);
+    try {
+      await fetch("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goalId: retroTarget.goalId, date: retroTarget.period }),
+      });
+      setRetroTarget(null);
+      setLoading(true);
+      loadHistory();
+    } finally {
+      setRetroSaving(false);
+    }
+  };
+
   return (
     <main className="max-w-md mx-auto px-4 py-10">
       <div className="flex items-center gap-3 mb-8">
-        <Link
-          href="/"
-          className="text-gray-400 hover:text-gray-700 transition-colors"
-        >
-          ← back
-        </Link>
         <h1 className="text-2xl font-bold text-gray-900">History</h1>
       </div>
 
@@ -206,9 +315,20 @@ export default function HistoryPage() {
       {!loading && !error && (
         <div className="space-y-4">
           {history.map((gh) => (
-            <GoalHistoryCard key={gh.goal.id} goalHistory={gh} />
+            <GoalHistoryCard key={gh.goal.id} goalHistory={gh} onRetroLog={handleRetroLog} />
           ))}
         </div>
+      )}
+
+      {retroTarget && (
+        <RetroLogModal
+          period={retroTarget.period}
+          goalName={retroTarget.goalName}
+          goalEmoji={retroTarget.goalEmoji}
+          onConfirm={confirmRetroLog}
+          onCancel={() => setRetroTarget(null)}
+          saving={retroSaving}
+        />
       )}
     </main>
   );

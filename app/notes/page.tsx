@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
 import type { WeeklyNote } from "@/lib/types";
 
 function getWeekKey(offsetWeeks = 0): string {
@@ -200,9 +199,6 @@ export default function NotesPage() {
     <main className="max-w-md mx-auto px-4 py-10">
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-3">
-          <Link href="/" className="text-gray-400 hover:text-gray-700 transition-colors">
-            ← back
-          </Link>
           <h1 className="text-2xl font-bold text-gray-900">Weekly Notes</h1>
         </div>
         {!addingNew && (

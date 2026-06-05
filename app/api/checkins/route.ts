@@ -27,9 +27,9 @@ async function sendNotification(goalId: string) {
 
 export async function POST(req: Request) {
   try {
-    const { goalId } = await req.json();
-    const result = await addCheckIn(goalId);
-    sendNotification(goalId); // fire-and-forget
+    const { goalId, date } = await req.json();
+    const result = await addCheckIn(goalId, date);
+    if (!date) sendNotification(goalId); // only notify for real-time check-ins
     return NextResponse.json(result);
   } catch (err) {
     console.error(err);

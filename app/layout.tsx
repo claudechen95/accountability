@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import BottomNav from "./components/BottomNav";
 
 export const metadata: Metadata = {
   title: "Alan's Check-ins",
@@ -13,7 +14,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-[#f8f7f4]">{children}</body>
+      <body className="min-h-screen bg-[#f8f7f4] pb-20">
+        {children}
+        <BottomNav />
+      </body>
     </html>
   );
 }

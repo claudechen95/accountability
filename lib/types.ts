@@ -6,6 +6,15 @@ export interface Goal {
   targetCount: number; // how many times per period
   nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only (daily goals always nudge)
   nudgeTime?: string;  // "HH:MM" PST 24hr, default "21:00"
+  type?: "mood";
+}
+
+export interface MoodEntry {
+  id: string;
+  timestamp: number;
+  date: string; // YYYY-MM-DD
+  emoji: string;
+  text: string;
 }
 
 export interface CheckInRecord {

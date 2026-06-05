@@ -5,7 +5,7 @@ const kv = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
   cache: "no-store",
 });
-import type { Goal, CheckInRecord, WeeklyNote } from "./types";
+import type { Goal, CheckInRecord, WeeklyNote, MoodEntry } from "./types";
 
 // --- Default goals seeded on first run ---
 const DEFAULT_GOALS: Goal[] = [
@@ -121,6 +121,18 @@ export async function getGoals(): Promise<Goal[]> {
     changed = true;
   }
 
+  if (!goals.find((g) => g.id === "emotional-checkin")) {
+    goals.push({
+      id: "emotional-checkin",
+      name: "Emotional Check-in",
+      emoji: "🧠",
+      frequency: "daily",
+      targetCount: 1,
+      type: "mood",
+    });
+    changed = true;
+  }
+
   if (changed) await kv.set("goals", goals);
   return goals;
 }
@@ -144,20 +156,19 @@ export async function getCheckInsForPeriod(
   return count ?? 0;
 }
 
-export async function addCheckIn(goalId: string): Promise<{ count: number }> {
+export async function addCheckIn(goalId: string, date?: string): Promise<{ count: number }> {
   const goals = await getGoals();
   const goal = goals.find((g) => g.id === goalId);
   if (!goal) throw new Error("Goal not found");
 
-  // Always store under the daily key so weekly totals can be derived from daily data
-  const today = getTodayDate();
-  const newCount = await kv.incr(`checkin:${goalId}:${today}`);
+  const targetDate = date || getTodayDate();
+  const newCount = await kv.incr(`checkin:${goalId}:${targetDate}`);
 
   const record: CheckInRecord = {
     goalId,
     timestamp: Date.now(),
-    date: today,
-    week: getWeekKey(),
+    date: targetDate,
+    week: getWeekKey(targetDate),
   };
   await kv.lpush(`history:${goalId}`, JSON.stringify(record));
 
@@ -370,6 +381,42 @@ export async function deleteWeeklyNote(weekKey: string): Promise<void> {
   await kv.del(`note:${weekKey}`);
 }
 
+// --- Mood / Emotional Check-in ---
+
+export async function addMoodEntry(emoji: string, text: string): Promise<void> {
+  const today = getTodayDate();
+  const entry: MoodEntry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: Date.now(),
+    date: today,
+    emoji,
+    text,
+  };
+  await kv.rpush(`mood:${today}`, JSON.stringify(entry));
+  await kv.incr(`checkin:emotional-checkin:${today}`);
+}
+
+export async function getMoodEntries(date: string): Promise<MoodEntry[]> {
+  const raw = await kv.lrange<string | MoodEntry>(`mood:${date}`, 0, -1);
+  return raw.map((e) => (typeof e === "string" ? JSON.parse(e) : e));
+}
+
+export async function getAllMoodEntries(limit = 90): Promise<MoodEntry[]> {
+  const keys = await kv.keys("mood:*");
+  if (keys.length === 0) return [];
+  const sorted = keys
+    .map((k) => k.replace("mood:", ""))
+    .sort()
+    .reverse()
+    .slice(0, limit);
+  const all: MoodEntry[] = [];
+  for (const date of sorted) {
+    const entries = await getMoodEntries(date);
+    all.push(...entries);
+  }
+  return all.sort((a, b) => b.timestamp - a.timestamp);
+}
+
 // Seed initial note for March 23, 2026 week (W13)
 export async function seedInitialWeeklyNote(): Promise<void> {
   const weekKey = "2026-W13";
@@ -386,6 +433,25 @@ export async function seedInitialWeeklyNote(): Promise<void> {
       "😴 Added: 7+ hr sleep tracking (daily) — biggest lever for discipline",
       "🥤 Adjusted: Protein intake changed from daily to 5x/week to lower burden",
       "✅ Reaffirmed: Lowering burden while maintaining progress IS progress",
+    ],
+  });
+}
+
+// Seed note for May 25, 2026 week (W22)
+export async function seedWeeklyNoteW22(): Promise<void> {
+  const weekKey = "2026-W22";
+  const existing = await getWeeklyNote(weekKey);
+  if (existing) return;
+
+  await saveWeeklyNote({
+    week: weekKey,
+    weekLabel: "Week of May 25",
+    headline: "Reflection Display, Retroactive Logging & Emotional Check-in",
+    notes: "Reviewed the history UX — reflections were being saved but the display needed to show them clearly on hover. Planned two new features: retroactive logging for days you forgot to track, and a new Emotional Check-in habit.",
+    changes: [
+      "🐛 Fixed: Missed-day reflection now visible on hover in the history grid (amber cells)",
+      "📅 Added: Retroactive logging — click a missed day in history to mark it as done",
+      "💭 Added: Emotional Check-in habit — pick an emoji (good/bad), write a note, log multiple times/day",
     ],
   });
 }

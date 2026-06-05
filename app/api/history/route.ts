@@ -19,11 +19,17 @@ export async function GET() {
         } else {
           const weekKeys = [...new Set(entries.map((e) => getWeekKey(e.period)))];
           const weekReflections = await getReflectionsForGoal(goal.id, weekKeys);
+          // Only attach a weekly reflection to the last missed day of that week,
+          // so the same text doesn't appear on every missed cell in the week.
+          const weekLastMissed: Record<string, string> = {};
           for (const entry of entries) {
             const wk = getWeekKey(entry.period);
             if (weekReflections[wk] && !entry.done) {
-              reflections[entry.period] = weekReflections[wk];
+              weekLastMissed[wk] = entry.period; // keep overwriting → ends up as last missed day
             }
+          }
+          for (const [wk, period] of Object.entries(weekLastMissed)) {
+            reflections[period] = weekReflections[wk];
           }
         }
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import Link from "next/link";
 import { version } from "@/version.json";
 import type { Goal, GoalStatus } from "@/lib/types";
 
@@ -268,6 +267,188 @@ function ReflectionModal({
   );
 }
 
+const WHEEL_EMOTIONS = [
+  { emoji: "😄", label: "Excited" },
+  { emoji: "🥳", label: "Joyful" },
+  { emoji: "😊", label: "Happy" },
+  { emoji: "🥰", label: "Loved" },
+  { emoji: "😌", label: "Calm" },
+  { emoji: "😇", label: "Grateful" },
+  { emoji: "💪", label: "Motivated" },
+  { emoji: "😎", label: "Confident" },
+  { emoji: "🤩", label: "Amazed" },
+  { emoji: "😏", label: "Playful" },
+  { emoji: "😐", label: "Neutral" },
+  { emoji: "🤔", label: "Confused" },
+  { emoji: "😔", label: "Down" },
+  { emoji: "😢", label: "Sad" },
+  { emoji: "😞", label: "Disappointed" },
+  { emoji: "😰", label: "Anxious" },
+  { emoji: "😨", label: "Scared" },
+  { emoji: "😫", label: "Exhausted" },
+  { emoji: "😡", label: "Angry" },
+  { emoji: "😤", label: "Frustrated" },
+];
+
+function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emoji: string) => void }) {
+  const [hovered, setHovered] = useState("");
+  const size = 260;
+  const center = size / 2;
+  const radius = 100;
+  const n = WHEEL_EMOTIONS.length;
+
+  // Hover takes precedence for preview; selected is the confirmed pick
+  const displayEmotion = WHEEL_EMOTIONS.find((e) => e.emoji === (hovered || selected));
+  const isPreview = !!hovered && hovered !== selected;
+
+  return (
+    <div className="relative mx-auto flex-shrink-0" style={{ width: size, height: size }}>
+      {/* Ring guide */}
+      <div
+        className="absolute rounded-full border border-gray-100"
+        style={{
+          width: radius * 2 + 36,
+          height: radius * 2 + 36,
+          left: center - radius - 18,
+          top: center - radius - 18,
+        }}
+      />
+      {/* Center — shows hovered label as preview, selected as confirmed */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="text-center px-4">
+          {displayEmotion ? (
+            <>
+              <div className={`text-3xl leading-none transition-opacity ${isPreview ? "opacity-40" : ""}`}>
+                {displayEmotion.emoji}
+              </div>
+              <div className={`text-xs font-semibold mt-1 transition-colors ${isPreview ? "text-gray-400" : "text-gray-700"}`}>
+                {displayEmotion.label}
+              </div>
+            </>
+          ) : (
+            <div className="text-[10px] text-gray-300 leading-tight text-center">tap an<br />emotion</div>
+          )}
+        </div>
+      </div>
+      {/* Emotion buttons */}
+      {WHEEL_EMOTIONS.map((emotion, i) => {
+        const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+        const x = center + radius * Math.cos(angle);
+        const y = center + radius * Math.sin(angle);
+        const isSelected = selected === emotion.emoji;
+        const isHovered = hovered === emotion.emoji;
+        return (
+          <button
+            key={emotion.emoji}
+            onClick={() => onSelect(emotion.emoji)}
+            onMouseEnter={() => setHovered(emotion.emoji)}
+            onMouseLeave={() => setHovered("")}
+            className={`absolute flex items-center justify-center rounded-full text-xl transition-all duration-100 -translate-x-1/2 -translate-y-1/2 ${
+              isSelected
+                ? "w-10 h-10 bg-indigo-100 ring-2 ring-indigo-400 scale-110 z-10"
+                : isHovered
+                ? "w-10 h-10 bg-gray-100 scale-110"
+                : "w-9 h-9"
+            }`}
+            style={{ left: x, top: y }}
+          >
+            {emotion.emoji}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MoodModal({
+  onSubmit,
+  onClose,
+}: {
+  onSubmit: (emoji: string, text: string) => void;
+  onClose: () => void;
+}) {
+  const [selectedEmoji, setSelectedEmoji] = useState("");
+  const [text, setText] = useState("");
+  const [customMode, setCustomMode] = useState(false);
+  const [customEmoji, setCustomEmoji] = useState("");
+
+  const effectiveEmoji = customMode ? customEmoji.trim() : selectedEmoji;
+
+  function handleWheelSelect(emoji: string) {
+    setSelectedEmoji(emoji);
+    setCustomMode(false);
+    setCustomEmoji("");
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-2xl bg-white shadow-xl pt-5 pb-8 px-5 sm:pb-5 space-y-4">
+        {/* Drag handle — mobile only */}
+        <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden" />
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">🧠</span>
+            <h2 className="text-base font-semibold text-gray-900">Emotional Check-in</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 transition-colors text-lg leading-none"
+          >
+            ✕
+          </button>
+        </div>
+
+        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">How are you feeling?</p>
+        <EmotionWheel selected={customMode ? "" : selectedEmoji} onSelect={handleWheelSelect} />
+
+        {customMode ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={customEmoji}
+              onChange={(e) => setCustomEmoji(e.target.value.slice(0, 2))}
+              placeholder="your emoji"
+              className="w-24 border border-indigo-300 rounded-xl px-3 py-2 text-center text-2xl focus:outline-none focus:ring-2 focus:ring-indigo-300"
+            />
+            <button
+              onClick={() => { setCustomMode(false); setCustomEmoji(""); }}
+              className="text-xs text-gray-400 hover:text-gray-600 underline"
+            >
+              back to wheel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => { setCustomMode(true); setSelectedEmoji(""); }}
+            className="text-xs text-gray-400 hover:text-indigo-500 underline w-full text-center"
+          >
+            something else?
+          </button>
+        )}
+
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="What's going on? (optional)"
+          rows={2}
+          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-300"
+        />
+
+        <button
+          onClick={() => effectiveEmoji && onSubmit(effectiveEmoji, text)}
+          disabled={!effectiveEmoji}
+          className="w-full bg-indigo-600 text-white rounded-xl py-2 text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+        >
+          Log check-in
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function GoalCard({
   goal,
   onCheckIn,
@@ -321,22 +502,34 @@ function GoalCard({
                 </svg>
               </div>
               <div className="flex items-center gap-2">
-                {goal.frequency === "daily" && goal.targetCount > 1 && (
+                {goal.type === "mood" ? (
                   <button
                     onClick={() => onCheckIn(goal.id)}
                     disabled={loading}
-                    className="text-xs text-green-600 hover:text-green-800 underline"
+                    className="text-xs text-indigo-500 hover:text-indigo-700 underline"
                   >
-                    +extra
+                    log another
                   </button>
+                ) : (
+                  <>
+                    {goal.frequency === "daily" && goal.targetCount > 1 && (
+                      <button
+                        onClick={() => onCheckIn(goal.id)}
+                        disabled={loading}
+                        className="text-xs text-green-600 hover:text-green-800 underline"
+                      >
+                        +extra
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onUndo(goal.id)}
+                      disabled={loading}
+                      className="text-xs text-gray-400 hover:text-gray-600 underline"
+                    >
+                      undo
+                    </button>
+                  </>
                 )}
-                <button
-                  onClick={() => onUndo(goal.id)}
-                  disabled={loading}
-                  className="text-xs text-gray-400 hover:text-gray-600 underline"
-                >
-                  undo
-                </button>
               </div>
             </div>
           ) : (
@@ -423,6 +616,7 @@ export default function HomePage() {
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
+  const [moodModalOpen, setMoodModalOpen] = useState(false);
 
   const fetchGoals = useCallback(async () => {
     try {
@@ -484,10 +678,31 @@ export default function HomePage() {
 
   const handleCheckIn = (goalId: string) => {
     const goal = goals.find((g) => g.id === goalId);
+    if (goal?.type === "mood") {
+      setMoodModalOpen(true);
+      return;
+    }
     if (goal?.lastPeriodMissed && goal.completedThisPeriod === 0) {
       setReflectionTarget(goal);
     } else {
       doCheckIn(goalId);
+    }
+  };
+
+  const handleMoodSubmit = async (emoji: string, text: string) => {
+    setMoodModalOpen(false);
+    setLoading(true);
+    try {
+      await fetch("/api/mood", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emoji, text }),
+      });
+      await fetchGoals();
+    } catch {
+      setError("Failed to log check-in. Try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -660,16 +875,16 @@ export default function HomePage() {
         />
       )}
 
+      {/* Mood modal */}
+      {moodModalOpen && (
+        <MoodModal
+          onSubmit={handleMoodSubmit}
+          onClose={() => setMoodModalOpen(false)}
+        />
+      )}
+
       {/* Footer */}
-      <div className="flex justify-center items-center gap-4 mt-6">
-        <Link href="/notes" className="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2 transition-colors">
-          view notes
-        </Link>
-        <span className="text-xs text-gray-300">·</span>
-        <Link href="/history" className="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2 transition-colors">
-          view history
-        </Link>
-        <span className="text-xs text-gray-300">·</span>
+      <div className="flex justify-center mt-6">
         <span className="text-xs text-gray-300">v{version}</span>
       </div>
     </main>

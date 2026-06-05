@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { 
-  getWeeklyNote, 
-  getAllWeeklyNotes, 
-  saveWeeklyNote, 
+import {
+  getWeeklyNote,
+  getAllWeeklyNotes,
+  saveWeeklyNote,
   deleteWeeklyNote,
   getCurrentWeekKey,
   getWeekLabel,
   seedInitialWeeklyNote,
+  seedWeeklyNoteW22,
 } from "@/lib/kv";
 
 // Get all notes or a specific week
@@ -20,6 +21,8 @@ export async function GET(req: Request) {
       return NextResponse.json(note || { week, weekLabel: getWeekLabel(week), headline: "", notes: "", changes: [] });
     }
     
+    await seedInitialWeeklyNote();
+    await seedWeeklyNoteW22();
     const notes = await getAllWeeklyNotes();
     return NextResponse.json(notes);
   } catch (err) {
