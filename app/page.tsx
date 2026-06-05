@@ -294,16 +294,54 @@ const WHEEL_EMOTIONS = [
   { emoji: "😤", label: "Frustrated" },
 ];
 
+// Clockwise indices for the tutorial sweep (spread evenly around the wheel)
+const TUT_STEPS = [0, 3, 6, 9, 13, 17];
+
 function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emoji: string) => void }) {
   const [hovered, setHovered] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  const [tutStep, setTutStep] = useState<number | null>(0); // null = tutorial done
+  const tutTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const size = 260;
   const center = size / 2;
   const radius = 100;
   const n = WHEEL_EMOTIONS.length;
 
+  const stopTutorial = useCallback(() => {
+    tutTimers.current.forEach(clearTimeout);
+    tutTimers.current = [];
+    setTutStep(null);
+    setHovered("");
+  }, []);
+
+  // Run the tutorial sweep once on mount
+  useEffect(() => {
+    const DELAY = 500;
+    const STEP = 320;
+    TUT_STEPS.forEach((idx, i) => {
+      const t = setTimeout(() => {
+        setTutStep(i);
+        setHovered(WHEEL_EMOTIONS[idx].emoji);
+      }, DELAY + i * STEP);
+      tutTimers.current.push(t);
+    });
+    const end = setTimeout(() => {
+      setHovered("");
+      setTutStep(null);
+    }, DELAY + TUT_STEPS.length * STEP);
+    tutTimers.current.push(end);
+    return () => { tutTimers.current.forEach(clearTimeout); };
+  }, []);
+
   const displayEmotion = WHEEL_EMOTIONS.find((e) => e.emoji === (hovered || selected));
   const isPreview = !!hovered && hovered !== selected;
+
+  // Compute tutorial dot position
+  const tutPos = tutStep !== null && tutStep < TUT_STEPS.length ? (() => {
+    const idx = TUT_STEPS[tutStep];
+    const angle = (idx / n) * 2 * Math.PI - Math.PI / 2;
+    return { x: center + radius * Math.cos(angle), y: center + radius * Math.sin(angle) };
+  })() : null;
 
   // Find which emotion button is under a touch point
   const emojiAtPoint = (x: number, y: number): string | null => {
@@ -317,11 +355,12 @@ function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emo
     return null;
   };
 
-  // Wire up non-passive touchmove so we can track the sliding finger
+  // Wire up touch tracking; cancel tutorial on first touch
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onMove = (e: TouchEvent) => {
+      stopTutorial();
       const t = e.touches[0];
       setHovered(emojiAtPoint(t.clientX, t.clientY) ?? "");
     };
@@ -337,7 +376,7 @@ function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emo
       el.removeEventListener("touchmove", onMove);
       el.removeEventListener("touchend", onEnd);
     };
-  }, [onSelect]);
+  }, [onSelect, stopTutorial]);
 
   return (
     <div ref={containerRef} className="relative mx-auto flex-shrink-0" style={{ width: size, height: size }}>
@@ -351,6 +390,15 @@ function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emo
           top: center - radius - 18,
         }}
       />
+      {/* Animated tutorial touch dot */}
+      {tutPos && (
+        <div
+          className="absolute z-20 pointer-events-none -translate-x-1/2 -translate-y-1/2"
+          style={{ left: tutPos.x, top: tutPos.y, transition: "left 0.28s ease, top 0.28s ease" }}
+        >
+          <div className="w-8 h-8 rounded-full bg-indigo-400/30 ring-2 ring-indigo-400/60 animate-ping" />
+        </div>
+      )}
       {/* Center label */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <div className="text-center px-4">
@@ -379,8 +427,8 @@ function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emo
           <button
             key={emotion.emoji}
             data-emoji={emotion.emoji}
-            onClick={() => onSelect(emotion.emoji)}
-            onMouseEnter={() => setHovered(emotion.emoji)}
+            onClick={() => { stopTutorial(); onSelect(emotion.emoji); }}
+            onMouseEnter={() => { stopTutorial(); setHovered(emotion.emoji); }}
             onMouseLeave={() => setHovered("")}
             className={`absolute flex items-center justify-center rounded-full transition-all duration-100 -translate-x-1/2 -translate-y-1/2 ${
               isSelected
