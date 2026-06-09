@@ -21,3 +21,7 @@ yarn-error.log*
 
 # vercel
 .vercel
+
+# local tooling artifacts
+.playwright-mcp/
+tsconfig.tsbuildinfo

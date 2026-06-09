@@ -1,2 +1,0 @@
-[     343ms] [WARNING] ./app/page.tsx
-Should not import the named export 'version' (imported as 'version') from default-exporting module (only default export is available soon) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:226
