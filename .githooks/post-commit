@@ -9,7 +9,7 @@ VERSION=$(node -e "
 const fs = require('fs');
 const v = JSON.parse(fs.readFileSync('version.json'));
 v.version++;
-v.updatedAt = new Date().toISOString().slice(0, 10);
+v.updatedAt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
 fs.writeFileSync('version.json', JSON.stringify(v, null, 2) + '\n');
 process.stdout.write(String(v.version));
 ")

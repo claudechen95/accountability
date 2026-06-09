@@ -29,6 +29,10 @@ function getTodayPST(): Date {
   return new Date(pstStr);
 }
 
+function isHandled(g: GoalStatus): boolean {
+  return g.isDone || (g.frequency === "weekly" && g.targetCount > 1 && g.todayCount >= 1);
+}
+
 function formatPeriod(frequency: "daily" | "weekly"): string {
   const today = getTodayPST();
   if (frequency === "daily") {
@@ -568,9 +572,7 @@ function GoalCard({
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const doneCard = goal.isDone;
-  const doneCircle = goal.isDone || (
-    goal.frequency === "weekly" && goal.targetCount > 1 && goal.todayCount >= 1
-  );
+  const doneCircle = isHandled(goal);
   const label = goal.frequency === "daily" ? "today" : "this week";
 
   return (
@@ -992,7 +994,7 @@ export default function HomePage() {
       )}
 
       {/* Goals */}
-      {!initialLoad && goals.some((g) => g.isDone) && (
+      {!initialLoad && goals.some(isHandled) && (
         <div className="flex justify-end mb-3">
           <button
             onClick={() => setHideDone((v) => !v)}
@@ -1012,7 +1014,7 @@ export default function HomePage() {
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={sortedGoals.map((g) => g.id)} strategy={verticalListSortingStrategy}>
             <div className="space-y-4">
-              {sortedGoals.filter((g) => !hideDone || !g.isDone).map((goal) =>
+              {sortedGoals.filter((g) => !hideDone || !isHandled(g)).map((goal) =>
                 editingId === goal.id ? (
                   <HabitForm
                     key={goal.id}
