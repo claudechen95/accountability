@@ -39,7 +39,7 @@ interface Goal {
 - **Goal ordering:** Drag-and-drop via `@dnd-kit`. Done goals always sink to bottom. Order persisted via `PATCH /api/goals` with `{ orderedIds: string[] }`.
 - **Reflection prompt:** Triggers when `lastPeriodMissed && completedThisPeriod === 0`. `lastPeriodMissed` = yesterday had 0 check-ins, for ALL goal types (not weekly-boundary based).
 - **Emotional Check-in** (`id: "emotional-checkin"`, `type: "mood"`): Opens mood emoji picker. "Log another" instead of "undo" when done. No position pin — user controls via drag.
-- **Retroactive logging:** Click a missed (gray/amber) cell in the history grid to log it for that date. `POST /api/checkins` accepts `{ goalId, date }`.
+- **Backfill:** Click a missed (gray/amber) cell in the history grid to log it for that date. `POST /api/checkins` accepts `{ goalId, date }`.
 - **Weekly streak for weekly goals:** Counted in weeks, not days. `getWeeklyStreak()` walks back 52 weeks.
 
 ## Migrations (run on every `getGoals()` call)

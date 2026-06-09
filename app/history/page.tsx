@@ -36,8 +36,8 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
   );
 }
 
-// --- Retroactive log confirmation modal ---
-function RetroLogModal({
+// --- Backfill confirmation modal ---
+function BackfillModal({
   period,
   goalName,
   goalEmoji,
@@ -93,7 +93,7 @@ function RetroLogModal({
             disabled={saving}
             className="flex-1 bg-gray-900 text-white rounded-xl py-2 text-sm font-medium hover:bg-gray-700 disabled:opacity-50 transition-colors"
           >
-            {saving ? "Logging…" : "Yes, log it"}
+            {saving ? "Saving…" : "Yes, backfill it"}
           </button>
           <button
             onClick={onCancel}
@@ -112,12 +112,12 @@ function DailyGrid({
   entries,
   frequency,
   reflections,
-  onRetroLog,
+  onBackfill,
 }: {
   entries: HistoryEntry[];
   frequency: "daily" | "weekly";
   reflections: Record<string, string>;
-  onRetroLog?: (period: string) => void;
+  onBackfill?: (period: string) => void;
 }) {
   const today = getTodayPST();
 
@@ -181,16 +181,16 @@ function DailyGrid({
                   weekday: "short", month: "short", day: "numeric",
                 });
                 const status = isFuture || frequency === "weekly" ? "" : entry.done ? ` · ✓` : isToday ? "" : ` · ✗ missed`;
-                const retroHint = isMissed && onRetroLog ? "\ntap to log retroactively" : "";
+                const retroHint = isMissed && onBackfill ? "\ntap to backfill" : "";
                 const tooltipText = reflection
                   ? `${label}${status}\n"${reflection.length > 80 ? reflection.slice(0, 80) + "…" : reflection}"${retroHint}`
                   : `${label}${status}${retroHint}`;
-                const clickable = isMissed && !!onRetroLog;
+                const clickable = isMissed && !!onBackfill;
                 return (
                   <Tooltip key={di} text={tooltipText}>
                     <div
                       className={`w-3 h-3 rounded-sm ${color} transition-colors ${clickable ? "cursor-pointer hover:opacity-70 active:scale-90" : "cursor-default"}`}
-                      onClick={() => clickable && onRetroLog!(entry.period)}
+                      onClick={() => clickable && onBackfill!(entry.period)}
                     />
                   </Tooltip>
                 );
@@ -222,10 +222,10 @@ function StatPill({ label, value }: { label: string; value: string | number }) {
 
 function GoalHistoryCard({
   goalHistory,
-  onRetroLog,
+  onBackfill,
 }: {
   goalHistory: GoalHistory;
-  onRetroLog: (goalId: string, period: string) => void;
+  onBackfill: (goalId: string, period: string) => void;
 }) {
   const { goal, entries, streak, reflections } = goalHistory;
   const today = getTodayPST();
@@ -255,13 +255,13 @@ function GoalHistoryCard({
         entries={entries}
         frequency={goal.frequency}
         reflections={reflections}
-        onRetroLog={(period) => onRetroLog(goal.id, period)}
+        onBackfill={(period) => onBackfill(goal.id, period)}
       />
     </div>
   );
 }
 
-interface RetroTarget {
+interface BackfillTarget {
   goalId: string;
   goalName: string;
   goalEmoji: string;
@@ -273,8 +273,8 @@ export default function HistoryPage() {
   const [history, setHistory] = useState<GoalHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [retroTarget, setRetroTarget] = useState<RetroTarget | null>(null);
-  const [retroSaving, setRetroSaving] = useState(false);
+  const [backfillTarget, setBackfillTarget] = useState<BackfillTarget | null>(null);
+  const [backfillSaving, setRetroSaving] = useState(false);
 
   const loadHistory = useCallback(() => {
     fetch("/api/history")
@@ -286,10 +286,10 @@ export default function HistoryPage() {
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
-  const handleRetroLog = (goalId: string, period: string) => {
+  const handleBackfill = (goalId: string, period: string) => {
     const gh = history.find((h) => h.goal.id === goalId);
     if (!gh) return;
-    setRetroTarget({
+    setBackfillTarget({
       goalId,
       period,
       goalName: gh.goal.name,
@@ -298,16 +298,16 @@ export default function HistoryPage() {
     });
   };
 
-  const confirmRetroLog = async () => {
-    if (!retroTarget) return;
+  const confirmBackfill = async () => {
+    if (!backfillTarget) return;
     setRetroSaving(true);
     try {
       await fetch("/api/checkins", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goalId: retroTarget.goalId, date: retroTarget.period }),
+        body: JSON.stringify({ goalId: backfillTarget.goalId, date: backfillTarget.period }),
       });
-      setRetroTarget(null);
+      setBackfillTarget(null);
       setLoading(true);
       loadHistory();
     } finally {
@@ -338,20 +338,20 @@ export default function HistoryPage() {
       {!loading && !error && (
         <div className="space-y-4">
           {history.map((gh) => (
-            <GoalHistoryCard key={gh.goal.id} goalHistory={gh} onRetroLog={handleRetroLog} />
+            <GoalHistoryCard key={gh.goal.id} goalHistory={gh} onBackfill={handleBackfill} />
           ))}
         </div>
       )}
 
-      {retroTarget && (
-        <RetroLogModal
-          period={retroTarget.period}
-          goalName={retroTarget.goalName}
-          goalEmoji={retroTarget.goalEmoji}
-          reflection={retroTarget.reflection}
-          onConfirm={confirmRetroLog}
-          onCancel={() => setRetroTarget(null)}
-          saving={retroSaving}
+      {backfillTarget && (
+        <BackfillModal
+          period={backfillTarget.period}
+          goalName={backfillTarget.goalName}
+          goalEmoji={backfillTarget.goalEmoji}
+          reflection={backfillTarget.reflection}
+          onConfirm={confirmBackfill}
+          onCancel={() => setBackfillTarget(null)}
+          saving={backfillSaving}
         />
       )}
     </main>
