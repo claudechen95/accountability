@@ -1,6 +1,24 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  TouchSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import versionData from "@/version.json";
 import type { Goal, GoalStatus } from "@/lib/types";
 
@@ -210,14 +228,9 @@ function ReflectionModal({
     return () => { document.body.style.overflow = ""; };
   }, []);
   const today = getTodayPST();
-  const periodLabel =
-    goal.frequency === "daily"
-      ? (() => {
-          const yesterday = new Date(today);
-          yesterday.setDate(today.getDate() - 1);
-          return yesterday.toLocaleDateString("en-US", { weekday: "long" });
-        })()
-      : "Last week";
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const periodLabel = yesterday.toLocaleDateString("en-US", { weekday: "long" });
 
   return (
     <div
@@ -543,6 +556,7 @@ function GoalCard({
   onEdit,
   onDelete,
   loading,
+  dragHandleProps,
 }: {
   goal: GoalStatus;
   onCheckIn: (id: string) => void;
@@ -550,6 +564,7 @@ function GoalCard({
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   loading: boolean;
+  dragHandleProps?: React.HTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> };
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const doneCard = goal.isDone;
@@ -566,7 +581,22 @@ function GoalCard({
           : "bg-white border-gray-200 shadow-sm"
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start gap-2">
+        {dragHandleProps && (
+          <button
+            {...dragHandleProps}
+            className="mt-2 cursor-grab active:cursor-grabbing touch-none text-gray-300 hover:text-gray-400 flex-shrink-0 focus:outline-none"
+            tabIndex={-1}
+            aria-label="Drag to reorder"
+          >
+            <svg viewBox="0 0 10 16" width="10" height="16" fill="currentColor">
+              <circle cx="2" cy="2.5" r="1.5" /><circle cx="8" cy="2.5" r="1.5" />
+              <circle cx="2" cy="8" r="1.5" /><circle cx="8" cy="8" r="1.5" />
+              <circle cx="2" cy="13.5" r="1.5" /><circle cx="8" cy="13.5" r="1.5" />
+            </svg>
+          </button>
+        )}
+        <div className="flex flex-1 items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-2xl">{goal.emoji}</span>
@@ -637,6 +667,7 @@ function GoalCard({
             </button>
           )}
         </div>
+        </div>
       </div>
 
       {goal.targetCount > 1 && (
@@ -695,6 +726,26 @@ function GoalCard({
   );
 }
 
+function SortableGoalCard(props: React.ComponentProps<typeof GoalCard>) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.goal.id,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.5 : 1,
+        zIndex: isDragging ? 10 : undefined,
+        position: "relative",
+      }}
+    >
+      <GoalCard {...props} dragHandleProps={{ ...attributes, ...listeners }} />
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [goals, setGoals] = useState<GoalStatus[]>([]);
   const [loading, setLoading] = useState(false);
@@ -704,6 +755,12 @@ export default function HomePage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
   const [moodModalOpen, setMoodModalOpen] = useState(false);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   const fetchGoals = useCallback(async () => {
     try {
@@ -867,6 +924,34 @@ export default function HomePage() {
     }
   };
 
+  const sortedGoals = [...goals].sort((a, b) => {
+    const handled = (g: GoalStatus) => g.isDone || (g.frequency === "weekly" && g.targetCount > 1 && g.todayCount >= 1);
+    if (handled(a) !== handled(b)) return Number(handled(a)) - Number(handled(b));
+    return (a.order ?? 999) - (b.order ?? 999);
+  });
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = sortedGoals.findIndex((g) => g.id === active.id);
+    const newIndex = sortedGoals.findIndex((g) => g.id === over.id);
+    const reordered = arrayMove(sortedGoals, oldIndex, newIndex);
+
+    setGoals(reordered.map((g, i) => ({ ...g, order: i })));
+
+    try {
+      await fetch("/api/goals", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedIds: reordered.map((g) => g.id) }),
+      });
+    } catch {
+      setError("Couldn't save order. Try again.");
+      fetchGoals();
+    }
+  };
+
   const allDone = goals.length > 0 && goals.every((g) => g.isDone);
 
   const updatedLabel = new Date(versionData.updatedAt + "T12:00:00").toLocaleDateString("en-US", {
@@ -917,31 +1002,30 @@ export default function HomePage() {
           ))}
         </div>
       ) : (
-        <div className="space-y-4">
-          {[...goals].sort((a, b) => {
-            const handled = (g: GoalStatus) => g.isDone || (g.frequency === "weekly" && g.targetCount > 1 && g.todayCount >= 1);
-            return Number(handled(a)) - Number(handled(b));
-          }).map((goal) =>
-            editingId === goal.id ? (
-              <HabitForm
-                key={goal.id}
-                initial={goal}
-                onSave={handleSaveHabit}
-                onCancel={() => setEditingId(null)}
-                loading={loading}
-              />
-            ) : (
-              <GoalCard
-                key={goal.id}
-                goal={goal}
-                onCheckIn={handleCheckIn}
-                onUndo={handleUndo}
-                onEdit={setEditingId}
-                onDelete={handleDeleteHabit}
-                loading={loading}
-              />
-            )
-          )}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={sortedGoals.map((g) => g.id)} strategy={verticalListSortingStrategy}>
+            <div className="space-y-4">
+              {sortedGoals.map((goal) =>
+                editingId === goal.id ? (
+                  <HabitForm
+                    key={goal.id}
+                    initial={goal}
+                    onSave={handleSaveHabit}
+                    onCancel={() => setEditingId(null)}
+                    loading={loading}
+                  />
+                ) : (
+                  <SortableGoalCard
+                    key={goal.id}
+                    goal={goal}
+                    onCheckIn={handleCheckIn}
+                    onUndo={handleUndo}
+                    onEdit={setEditingId}
+                    onDelete={handleDeleteHabit}
+                    loading={loading}
+                  />
+                )
+              )}
 
           {addingNew ? (
             <HabitForm
@@ -957,7 +1041,9 @@ export default function HomePage() {
               + Add habit
             </button>
           )}
-        </div>
+            </div>
+          </SortableContext>
+        </DndContext>
       )}
 
       {/* Reflection modal */}

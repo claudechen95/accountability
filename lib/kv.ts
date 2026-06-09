@@ -133,6 +133,13 @@ export async function getGoals(): Promise<Goal[]> {
     changed = true;
   }
 
+  // Eye ointment bumped from 5x to 6x/week (June 2026)
+  const eyeGoal = goals.find((g) => g.name === "Eye ointment" && g.targetCount === 5);
+  if (eyeGoal) {
+    eyeGoal.targetCount = 6;
+    changed = true;
+  }
+
   if (changed) await kv.set("goals", goals);
   return goals;
 }
@@ -266,10 +273,12 @@ async function getWeeklyStreak(goal: Goal): Promise<number> {
 
 // --- Missed period detection ---
 
-function getLastPeriodDateStr(goal: Goal): string {
+// Always returns yesterday's date regardless of goal frequency.
+// Reflection prompts are triggered based on missing yesterday, not missing a whole week.
+function getLastPeriodDateStr(): string {
   const today = getTodayDate();
   const [y, m, d] = today.split("-").map(Number);
-  const ref = new Date(Date.UTC(y, m - 1, goal.frequency === "daily" ? d - 1 : d - 7, 12));
+  const ref = new Date(Date.UTC(y, m - 1, d - 1, 12));
   return [
     ref.getUTCFullYear(),
     String(ref.getUTCMonth() + 1).padStart(2, "0"),
@@ -277,25 +286,16 @@ function getLastPeriodDateStr(goal: Goal): string {
   ].join("-");
 }
 
-export function getLastPeriodKey(goal: Goal): string {
-  const dateStr = getLastPeriodDateStr(goal);
-  return goal.frequency === "daily" ? dateStr : getWeekKey(dateStr);
+export function getLastPeriodKey(_goal: Goal): string {
+  return getLastPeriodDateStr();
 }
 
 export async function getLastPeriodMissed(goal: Goal): Promise<boolean> {
   const hasHistory = (await kv.llen(`history:${goal.id}`)) > 0;
   if (!hasHistory) return false;
 
-  if (goal.frequency === "daily") {
-    const count = await getCheckInsForPeriod(goal.id, getLastPeriodDateStr(goal));
-    return count < goal.targetCount;
-  }
-
-  const daysCompleted = await getWeeklyDaysCompleted(
-    goal.id,
-    getWeekDatesForDate(getLastPeriodDateStr(goal))
-  );
-  return daysCompleted < goal.targetCount;
+  const count = await getCheckInsForPeriod(goal.id, getLastPeriodDateStr());
+  return count === 0;
 }
 
 export async function getReflectionsForGoal(
@@ -449,6 +449,25 @@ export async function seedInitialWeeklyNote(): Promise<void> {
       "😴 Added: 7+ hr sleep tracking (daily) — biggest lever for discipline",
       "🥤 Adjusted: Protein intake changed from daily to 5x/week to lower burden",
       "✅ Reaffirmed: Lowering burden while maintaining progress IS progress",
+    ],
+  });
+}
+
+// Seed note for Jun 1, 2026 week (W23)
+export async function seedWeeklyNoteW23(): Promise<void> {
+  const weekKey = "2026-W23";
+  const existing = await getWeeklyNote(weekKey);
+  if (existing) return;
+
+  await saveWeeklyNote({
+    week: weekKey,
+    weekLabel: "Week of Jun 1",
+    headline: "Reflection for Any Missed Day, Eye Ointment to 6x & Pinned Check-in",
+    notes: "Three targeted improvements: fixed a bug where the reflection prompt for weekly goals only triggered at the start of a new week (now triggers whenever yesterday was missed, regardless of goal frequency). Bumped the eye ointment target from 5x to 6x per week. Pinned the Emotional Check-in habit to always appear first in the goal list.",
+    changes: [
+      "🐛 Fixed: Reflection prompt now triggers for any goal if you missed yesterday — no longer limited to weekly-goal week boundaries",
+      "💧 Updated: Eye ointment raised from 5x to 6x per week",
+      "📌 Added: Emotional Check-in pinned to always appear first in the habit list",
     ],
   });
 }

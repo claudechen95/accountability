@@ -8,6 +8,7 @@ import {
   getWeekLabel,
   seedInitialWeeklyNote,
   seedWeeklyNoteW22,
+  seedWeeklyNoteW23,
 } from "@/lib/kv";
 
 // Get all notes or a specific week
@@ -23,6 +24,7 @@ export async function GET(req: Request) {
     
     await seedInitialWeeklyNote();
     await seedWeeklyNoteW22();
+    await seedWeeklyNoteW23();
     const notes = await getAllWeeklyNotes();
     return NextResponse.json(notes);
   } catch (err) {

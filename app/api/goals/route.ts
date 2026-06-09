@@ -52,6 +52,25 @@ export async function POST(req: Request) {
   }
 }
 
+export async function PATCH(req: Request) {
+  try {
+    const { orderedIds } = await req.json();
+    if (!Array.isArray(orderedIds)) {
+      return NextResponse.json({ error: "orderedIds required" }, { status: 400 });
+    }
+    const goals = await getGoals();
+    (orderedIds as string[]).forEach((id, index) => {
+      const goal = goals.find((g) => g.id === id);
+      if (goal) goal.order = index;
+    });
+    await saveGoals(goals);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Failed to update order" }, { status: 500 });
+  }
+}
+
 export async function DELETE(req: Request) {
   try {
     const { id } = await req.json();

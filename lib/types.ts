@@ -7,6 +7,7 @@ export interface Goal {
   nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only (daily goals always nudge)
   nudgeTime?: string;  // "HH:MM" PST 24hr, default "21:00"
   type?: "mood";
+  order?: number;
 }
 
 export interface MoodEntry {
