@@ -1,0 +1,125 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - heading "Hey Alan 👋" [level=1] [ref=e4]
+      - paragraph [ref=e5]: Monday, May 25
+    - generic [ref=e6]:
+      - generic [ref=e16]:
+        - generic [ref=e17]:
+          - generic [ref=e18]:
+            - generic [ref=e19]:
+              - generic [ref=e20]: 🏃
+              - heading "HIIT" [level=2] [ref=e21]
+            - paragraph [ref=e22]: 1x weekly · Week of May 25
+            - generic [ref=e23]: 🔥 10 in a row
+          - button [ref=e25] [cursor=pointer]:
+            - img [ref=e26]
+        - generic [ref=e28]:
+          - button "edit" [ref=e29] [cursor=pointer]
+          - button "delete" [ref=e30] [cursor=pointer]
+      - generic [ref=e31]:
+        - generic [ref=e32]:
+          - generic [ref=e33]:
+            - generic [ref=e34]:
+              - generic [ref=e35]: 🎹
+              - heading "Piano Session" [level=2] [ref=e36]
+            - paragraph [ref=e37]: 3x weekly · Week of May 25
+          - button [ref=e39] [cursor=pointer]:
+            - img [ref=e40]
+        - paragraph [ref=e47]: 0/3 this week
+        - generic [ref=e48]:
+          - button "edit" [ref=e49] [cursor=pointer]
+          - button "delete" [ref=e50] [cursor=pointer]
+      - generic [ref=e51]:
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - generic [ref=e54]:
+              - generic [ref=e55]: 🙆
+              - heading "Stretch" [level=2] [ref=e56]
+            - paragraph [ref=e57]: 2x weekly · Week of May 25
+          - button [ref=e59] [cursor=pointer]:
+            - img [ref=e60]
+        - paragraph [ref=e66]: 0/2 this week
+        - generic [ref=e67]:
+          - button "edit" [ref=e68] [cursor=pointer]
+          - button "delete" [ref=e69] [cursor=pointer]
+      - generic [ref=e70]:
+        - generic [ref=e71]:
+          - generic [ref=e72]:
+            - generic [ref=e73]:
+              - generic [ref=e74]: 🏋️
+              - heading "Resistance training" [level=2] [ref=e75]
+            - paragraph [ref=e76]: 1x weekly · Week of May 25
+          - button [ref=e78] [cursor=pointer]:
+            - img [ref=e79]
+        - generic [ref=e81]:
+          - button "edit" [ref=e82] [cursor=pointer]
+          - button "delete" [ref=e83] [cursor=pointer]
+      - generic [ref=e84]:
+        - generic [ref=e85]:
+          - generic [ref=e86]:
+            - generic [ref=e87]:
+              - generic [ref=e88]: 🥤
+              - heading "Protein drink!" [level=2] [ref=e89]
+            - paragraph [ref=e90]: 1x daily · Monday, May 25
+            - generic [ref=e91]: 🔥 4 in a row
+          - generic [ref=e93]:
+            - img [ref=e95]
+            - button "undo" [ref=e98] [cursor=pointer]
+        - generic [ref=e99]:
+          - button "edit" [ref=e100] [cursor=pointer]
+          - button "delete" [ref=e101] [cursor=pointer]
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - generic [ref=e104]:
+            - generic [ref=e105]:
+              - generic [ref=e106]: 😴
+              - heading "7+ hr sleep" [level=2] [ref=e107]
+            - paragraph [ref=e108]: 6x weekly · Week of May 25
+            - generic [ref=e109]: 🔥 1 streak
+          - generic [ref=e111]:
+            - img [ref=e113]
+            - button "undo" [ref=e116] [cursor=pointer]
+        - paragraph [ref=e125]: 1/6 this week
+        - generic [ref=e126]:
+          - button "edit" [ref=e127] [cursor=pointer]
+          - button "delete" [ref=e128] [cursor=pointer]
+      - generic [ref=e129]:
+        - generic [ref=e130]:
+          - generic [ref=e131]:
+            - generic [ref=e132]:
+              - generic [ref=e133]: 🥗
+              - heading "Salad" [level=2] [ref=e134]
+            - paragraph [ref=e135]: 6x weekly · Week of May 25
+          - generic [ref=e137]:
+            - img [ref=e139]
+            - button "undo" [ref=e142] [cursor=pointer]
+        - paragraph [ref=e151]: 1/6 this week
+        - generic [ref=e152]:
+          - button "edit" [ref=e153] [cursor=pointer]
+          - button "delete" [ref=e154] [cursor=pointer]
+      - generic [ref=e155]:
+        - generic [ref=e156]:
+          - generic [ref=e157]:
+            - generic [ref=e158]:
+              - generic [ref=e159]: 👁️
+              - heading "Eye ointment" [level=2] [ref=e160]
+            - paragraph [ref=e161]: 5x weekly · Week of May 25
+            - generic [ref=e162]: 🔥 1 streak
+          - generic [ref=e164]:
+            - img [ref=e166]
+            - button "undo" [ref=e169] [cursor=pointer]
+        - paragraph [ref=e177]: 1/5 this week
+        - generic [ref=e178]:
+          - button "edit" [ref=e179] [cursor=pointer]
+          - button "delete" [ref=e180] [cursor=pointer]
+      - button "+ Add habit" [ref=e181] [cursor=pointer]
+    - generic [ref=e9]:
+      - link "view notes" [ref=e10] [cursor=pointer]:
+        - /url: /notes
+      - generic [ref=e11]: ·
+      - link "view history" [ref=e12] [cursor=pointer]:
+        - /url: /history
+      - generic [ref=e13]: ·
+      - generic [ref=e14]: v43
+  - alert [ref=e15]

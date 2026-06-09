@@ -1,0 +1,13 @@
+[     329ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/favicon.ico:0
+[     370ms] [WARNING] ./app/page.tsx
+Should not import the named export 'version' (imported as 'version') from default-exporting module (only default export is available soon) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:226
+[  396756ms] [WARNING] ./app/page.tsx
+Should not import the named export 'version' (imported as 'version') from default-exporting module (only default export is available soon)
+
+Import trace for requested module:
+./app/page.tsx @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:226
+[  401806ms] [WARNING] ./app/page.tsx
+Should not import the named export 'version' (imported as 'version') from default-exporting module (only default export is available soon)
+
+Import trace for requested module:
+./app/page.tsx @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:226

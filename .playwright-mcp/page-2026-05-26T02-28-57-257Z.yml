@@ -1,0 +1,14 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - heading "Hey Alan 👋" [level=1] [ref=e4]
+      - paragraph [ref=e5]: Monday, May 25
+    - generic [ref=e9]:
+      - link "view notes" [ref=e10] [cursor=pointer]:
+        - /url: /notes
+      - generic [ref=e11]: ·
+      - link "view history" [ref=e12] [cursor=pointer]:
+        - /url: /history
+      - generic [ref=e13]: ·
+      - generic [ref=e14]: v43
+  - alert [ref=e15]

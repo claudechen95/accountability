@@ -1,0 +1,7 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - link "← back" [ref=e4] [cursor=pointer]:
+        - /url: /
+      - heading "History" [level=1] [ref=e5]
+  - alert [ref=e9]

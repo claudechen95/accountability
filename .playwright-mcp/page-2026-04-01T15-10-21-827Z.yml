@@ -1,0 +1,79 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - heading "Hey Alan 👋" [level=1] [ref=e4]
+      - paragraph [ref=e5]: Wednesday, April 1
+    - generic [ref=e6]:
+      - generic [ref=e17]:
+        - generic [ref=e18]:
+          - generic [ref=e19]:
+            - generic [ref=e20]: 🏋️
+            - heading "Gym session" [level=2] [ref=e21]
+          - paragraph [ref=e22]: 1x weekly · Week of Mar 30
+          - generic [ref=e23]: 🔥 2 in a row
+        - button [disabled] [ref=e25]:
+          - img [ref=e26]
+      - generic [ref=e28]:
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - generic [ref=e31]:
+              - generic [ref=e32]: 🥤
+              - heading "Protein drink" [level=2] [ref=e33]
+            - paragraph [ref=e34]: 5x weekly · Week of Mar 30
+            - generic [ref=e35]: 🔥 2 in a row
+          - button [disabled] [ref=e37]:
+            - img [ref=e38]
+        - paragraph [ref=e47]: 1/5 this week
+      - generic [ref=e49]:
+        - generic [ref=e50]:
+          - generic [ref=e51]:
+            - generic [ref=e52]: 🥗
+            - heading "Macro nutrients" [level=2] [ref=e53]
+          - paragraph [ref=e54]: 1x daily · Wednesday, April 1
+        - button [disabled] [ref=e56]:
+          - img [ref=e57]
+      - generic [ref=e60]:
+        - generic [ref=e61]:
+          - generic [ref=e62]:
+            - generic [ref=e63]: 😴
+            - heading "7+ hr sleep" [level=2] [ref=e64]
+          - paragraph [ref=e65]: 1x daily · Wednesday, April 1
+        - button [disabled] [ref=e67]:
+          - img [ref=e68]
+    - generic [ref=e70]:
+      - generic [ref=e71]: Remind me at
+      - combobox [ref=e72]:
+        - option "12:00 AM"
+        - option "1:00 AM"
+        - option "2:00 AM"
+        - option "3:00 AM"
+        - option "4:00 AM"
+        - option "5:00 AM"
+        - option "6:00 AM"
+        - option "7:00 AM"
+        - option "8:00 AM"
+        - option "9:00 AM"
+        - option "10:00 AM"
+        - option "11:00 AM"
+        - option "12:00 PM"
+        - option "1:00 PM"
+        - option "2:00 PM"
+        - option "3:00 PM"
+        - option "4:00 PM"
+        - option "5:00 PM"
+        - option "6:00 PM"
+        - option "7:00 PM"
+        - option "8:00 PM"
+        - option "9:00 PM"
+        - option "10:00 PM" [selected]
+        - option "11:00 PM"
+      - generic [ref=e73]: PST
+    - generic [ref=e9]:
+      - link "view notes" [ref=e10] [cursor=pointer]:
+        - /url: /notes
+      - generic [ref=e11]: ·
+      - link "view history" [ref=e12] [cursor=pointer]:
+        - /url: /history
+      - generic [ref=e13]: ·
+      - generic [ref=e14]: v15
+  - alert [ref=e15]

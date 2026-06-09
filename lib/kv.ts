@@ -324,64 +324,6 @@ export async function saveReflection(goalId: string, text: string): Promise<void
   await kv.set(`reflection:${goalId}:${periodKey}`, { text, savedAt: Date.now() });
 }
 
-// One-time migration: week-keyed reflections → date-keyed.
-// Old code saved weekly-goal reflections under getWeekKey(today-7d).
-// New code saves under today-1d. This scans all week keys for the past
-// 52 weeks and re-saves any found entries under savedAt-7d date keys.
-export async function migrateWeekKeyedReflections(): Promise<{ migrated: number; skipped: number }> {
-  const goals = await getGoals();
-  const today = getTodayDate();
-  const [ty, tm, td] = today.split("-").map(Number);
-
-  // Collect unique week keys for the past 52 weeks
-  const seen = new Set<string>();
-  const weekKeys: string[] = [];
-  for (let i = 0; i < 52; i++) {
-    const ref = new Date(Date.UTC(ty, tm - 1, td - i * 7, 12));
-    const ds = [
-      ref.getUTCFullYear(),
-      String(ref.getUTCMonth() + 1).padStart(2, "0"),
-      String(ref.getUTCDate()).padStart(2, "0"),
-    ].join("-");
-    const wk = getWeekKey(ds);
-    if (!seen.has(wk)) { seen.add(wk); weekKeys.push(wk); }
-  }
-
-  let migrated = 0;
-  let skipped = 0;
-
-  for (const goal of goals) {
-    for (const wk of weekKeys) {
-      const val = await kv.get<{ text: string; savedAt: number }>(`reflection:${goal.id}:${wk}`);
-      if (!val?.text) continue;
-
-      // The old code saved the reflection when the user checked in (savedAt),
-      // and the period was today-7d at that moment. Reconstruct that date.
-      const savedDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" })
-        .format(new Date(val.savedAt));
-      const [sy, sm, sd] = savedDate.split("-").map(Number);
-      const dateRef = new Date(Date.UTC(sy, sm - 1, sd - 7, 12));
-      const newDateKey = [
-        dateRef.getUTCFullYear(),
-        String(dateRef.getUTCMonth() + 1).padStart(2, "0"),
-        String(dateRef.getUTCDate()).padStart(2, "0"),
-      ].join("-");
-
-      const newKey = `reflection:${goal.id}:${newDateKey}`;
-      const existing = await kv.get(newKey);
-      if (existing) {
-        skipped++;
-      } else {
-        await kv.set(newKey, val);
-        migrated++;
-      }
-      await kv.del(`reflection:${goal.id}:${wk}`);
-    }
-  }
-
-  return { migrated, skipped };
-}
-
 // --- Weekly Notes ---
 
 export function getCurrentWeekKey(): string {

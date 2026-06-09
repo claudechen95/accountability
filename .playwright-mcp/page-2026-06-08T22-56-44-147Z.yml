@@ -1,0 +1,28 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - heading "Hey Alan 👋" [level=1] [ref=e5]
+        - paragraph [ref=e6]: Monday, June 8
+      - generic [ref=e7]:
+        - paragraph [ref=e8]: v60
+        - paragraph [ref=e9]: updated Jun 6
+  - navigation [ref=e13]:
+    - generic [ref=e14]:
+      - link "Home" [ref=e15] [cursor=pointer]:
+        - /url: /
+        - img [ref=e16]
+        - text: Home
+      - link "Mood" [ref=e18] [cursor=pointer]:
+        - /url: /mood
+        - img [ref=e19]
+        - text: Mood
+      - link "Notes" [ref=e22] [cursor=pointer]:
+        - /url: /notes
+        - img [ref=e23]
+        - text: Notes
+      - link "History" [ref=e25] [cursor=pointer]:
+        - /url: /history
+        - img [ref=e26]
+        - text: History
+  - alert [ref=e28]
