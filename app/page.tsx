@@ -924,11 +924,7 @@ export default function HomePage() {
     }
   };
 
-  const sortedGoals = [...goals].sort((a, b) => {
-    const handled = (g: GoalStatus) => g.isDone || (g.frequency === "weekly" && g.targetCount > 1 && g.todayCount >= 1);
-    if (handled(a) !== handled(b)) return Number(handled(a)) - Number(handled(b));
-    return (a.order ?? 999) - (b.order ?? 999);
-  });
+  const sortedGoals = [...goals].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
