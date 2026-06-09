@@ -755,6 +755,7 @@ export default function HomePage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
   const [moodModalOpen, setMoodModalOpen] = useState(false);
+  const [hideDone, setHideDone] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -991,6 +992,16 @@ export default function HomePage() {
       )}
 
       {/* Goals */}
+      {!initialLoad && goals.some((g) => g.isDone) && (
+        <div className="flex justify-end mb-3">
+          <button
+            onClick={() => setHideDone((v) => !v)}
+            className="text-xs text-gray-400 hover:text-gray-600 underline"
+          >
+            {hideDone ? "show completed" : "hide completed"}
+          </button>
+        </div>
+      )}
       {initialLoad ? (
         <div className="space-y-4">
           {[1, 2].map((i) => (
@@ -1001,7 +1012,7 @@ export default function HomePage() {
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={sortedGoals.map((g) => g.id)} strategy={verticalListSortingStrategy}>
             <div className="space-y-4">
-              {sortedGoals.map((goal) =>
+              {sortedGoals.filter((g) => !hideDone || !g.isDone).map((goal) =>
                 editingId === goal.id ? (
                   <HabitForm
                     key={goal.id}
