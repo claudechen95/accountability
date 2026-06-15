@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import type { MoodEntry } from "@/lib/types";
+import { MoodModal } from "@/app/components/MoodModal";
 
 const PST = "America/Los_Angeles";
 
@@ -47,6 +48,7 @@ export function MoodPage({ userId }: { userId?: string }) {
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
   const today = getTodayPST();
 
   const q = userId ? `&user=${encodeURIComponent(userId)}` : "";
@@ -60,6 +62,16 @@ export function MoodPage({ userId }: { userId?: string }) {
   };
 
   useEffect(() => { load(); }, []);
+
+  const handleSubmit = async (emoji: string, text: string) => {
+    setModalOpen(false);
+    await fetch(`/api/mood${userId ? `?user=${encodeURIComponent(userId)}` : ""}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emoji, text }),
+    });
+    load();
+  };
 
   const handleDelete = async (entry: MoodEntry) => {
     setDeletingId(entry.id);
@@ -79,9 +91,16 @@ export function MoodPage({ userId }: { userId?: string }) {
   };
 
   return (
+    <>
     <main className="max-w-md mx-auto px-4 py-10">
-      <div className="flex items-center gap-3 mb-8">
+      <div className="flex items-center justify-between mb-8">
         <h1 className="text-2xl font-bold text-gray-900">Mood Journal</h1>
+        <button
+          onClick={() => setModalOpen(true)}
+          className="text-sm font-medium text-indigo-500 hover:text-indigo-700 underline"
+        >
+          + log emotion
+        </button>
       </div>
 
       {loading && (
@@ -165,5 +184,10 @@ export function MoodPage({ userId }: { userId?: string }) {
         </div>
       )}
     </main>
+
+      {modalOpen && (
+        <MoodModal onSubmit={handleSubmit} onClose={() => setModalOpen(false)} />
+      )}
+    </>
   );
 }
