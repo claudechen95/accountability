@@ -9,6 +9,7 @@ import {
   seedInitialWeeklyNote,
   seedWeeklyNoteW22,
   seedWeeklyNoteW23,
+  resolveUser,
 } from "@/lib/kv";
 
 // Get all notes or a specific week
@@ -16,16 +17,20 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const week = searchParams.get("week");
-    
+    const user = resolveUser(searchParams.get("user"));
+
     if (week) {
-      const note = await getWeeklyNote(week);
+      const note = await getWeeklyNote(week, user);
       return NextResponse.json(note || { week, weekLabel: getWeekLabel(week), headline: "", notes: "", changes: [] });
     }
-    
-    await seedInitialWeeklyNote();
-    await seedWeeklyNoteW22();
-    await seedWeeklyNoteW23();
-    const notes = await getAllWeeklyNotes();
+
+    // Seed Alan's changelog notes for the default (no-user) namespace
+    if (!user) {
+      await seedInitialWeeklyNote();
+      await seedWeeklyNoteW22();
+      await seedWeeklyNoteW23();
+    }
+    const notes = await getAllWeeklyNotes(52, user);
     return NextResponse.json(notes);
   } catch (err) {
     console.error(err);
@@ -36,21 +41,22 @@ export async function GET(req: Request) {
 // Create or update a note
 export async function POST(req: Request) {
   try {
+    const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const body = await req.json();
     const { week, headline, notes, changes } = body;
-    
+
     if (!week) {
       return NextResponse.json({ error: "Week is required" }, { status: 400 });
     }
-    
+
     await saveWeeklyNote({
       week,
       weekLabel: getWeekLabel(week),
       headline: headline || "",
       notes: notes || "",
       changes: changes || [],
-    });
-    
+    }, user);
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -61,13 +67,14 @@ export async function POST(req: Request) {
 // Delete a note
 export async function DELETE(req: Request) {
   try {
+    const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { week } = await req.json();
-    
+
     if (!week) {
       return NextResponse.json({ error: "Week is required" }, { status: 400 });
     }
-    
-    await deleteWeeklyNote(week);
+
+    await deleteWeeklyNote(week, user);
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error(err);

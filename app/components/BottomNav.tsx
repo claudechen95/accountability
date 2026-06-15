@@ -43,18 +43,31 @@ const TABS = [
   },
 ];
 
+const KNOWN_FIRST_SEGMENTS = new Set(["mood", "notes", "history"]);
+
 export default function BottomNav() {
   const pathname = usePathname();
+
+  // No nav on the landing page
+  if (pathname === "/") return null;
+
+  // If the first path segment isn't a known route, treat it as a user prefix (e.g. /claude)
+  const firstSegment = pathname.split("/").filter(Boolean)[0];
+  const userBase = firstSegment && !KNOWN_FIRST_SEGMENTS.has(firstSegment) ? `/${firstSegment}` : "";
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/90 backdrop-blur border-t border-gray-200">
       <div className="max-w-md mx-auto flex">
         {TABS.map((tab) => {
-          const active = tab.href === "/" ? pathname === "/" : pathname.startsWith(tab.href);
+          const tabHref = tab.href === "/" ? userBase || "/" : userBase + tab.href;
+          const active =
+            tab.href === "/"
+              ? pathname === "/" || pathname === userBase
+              : pathname.startsWith(userBase + tab.href);
           return (
             <Link
               key={tab.href}
-              href={tab.href}
+              href={tabHref}
               className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors ${
                 active ? "text-indigo-600" : "text-gray-400 hover:text-gray-600"
               }`}

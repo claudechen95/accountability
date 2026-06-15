@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { addCheckIn, undoCheckIn, getGoals } from "@/lib/kv";
+import { addCheckIn, undoCheckIn, getGoals, resolveUser } from "@/lib/kv";
 
-async function sendNotification(goalId: string) {
+async function sendNotification(goalId: string, userId?: string) {
   const topic = process.env.NTFY_TOPIC;
   if (!topic) return;
 
   try {
-    const goals = await getGoals();
+    const goals = await getGoals(userId);
     const goal = goals.find((g) => g.id === goalId);
     if (!goal) return;
 
@@ -27,9 +27,10 @@ async function sendNotification(goalId: string) {
 
 export async function POST(req: Request) {
   try {
+    const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { goalId, date } = await req.json();
-    const result = await addCheckIn(goalId, date);
-    if (!date) sendNotification(goalId); // only notify for real-time check-ins
+    const result = await addCheckIn(goalId, date, user);
+    if (!date) sendNotification(goalId, user); // only notify for real-time check-ins
     return NextResponse.json(result);
   } catch (err) {
     console.error(err);
@@ -39,8 +40,9 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { goalId } = await req.json();
-    const result = await undoCheckIn(goalId);
+    const result = await undoCheckIn(goalId, user);
     return NextResponse.json(result);
   } catch (err) {
     console.error(err);

@@ -7,6 +7,18 @@ const kv = new Redis({
 });
 import type { Goal, CheckInRecord, WeeklyNote, MoodEntry } from "./types";
 
+// Normalize the ?user= param: "alan" and empty both map to undefined (un-prefixed namespace).
+// Call this in every API route when reading the user query param.
+export function resolveUser(param: string | null | undefined): string | undefined {
+  if (!param || param === "alan") return undefined;
+  return param;
+}
+
+// Namespace Redis keys by user. No userId → Alan's existing un-prefixed keys (backward compat).
+function k(userId: string | undefined, key: string): string {
+  return userId ? `${userId}:${key}` : key;
+}
+
 // --- Default goals seeded on first run ---
 const DEFAULT_GOALS: Goal[] = [
   {
@@ -33,13 +45,13 @@ const DEFAULT_GOALS: Goal[] = [
 ];
 
 // --- Settings ---
-export async function getRemindHour(): Promise<number> {
-  const val = await kv.get<number>("settings:remindHour");
+export async function getRemindHour(userId?: string): Promise<number> {
+  const val = await kv.get<number>(k(userId, "settings:remindHour"));
   return val ?? 20; // default 8 PM PST
 }
 
-export async function setRemindHour(hour: number): Promise<void> {
-  await kv.set("settings:remindHour", hour);
+export async function setRemindHour(hour: number, userId?: string): Promise<void> {
+  await kv.set(k(userId, "settings:remindHour"), hour);
 }
 
 // --- Period helpers ---
@@ -86,90 +98,98 @@ function getWeekDatesForDate(dateStr: string): string[] {
 // Count how many days in the given week had ≥1 check-in.
 // Falls back to the legacy weekly key (checkin:{id}:{YYYY-WXX}) for data recorded before the
 // switch to daily storage, counting it as 1 day if the weekly key has ≥1 check-in.
-async function getWeeklyDaysCompleted(goalId: string, weekDates: string[]): Promise<number> {
-  const counts = await kv.mget<number[]>(...weekDates.map((d) => `checkin:${goalId}:${d}`));
+async function getWeeklyDaysCompleted(goalId: string, weekDates: string[], userId?: string): Promise<number> {
+  const counts = await kv.mget<number[]>(...weekDates.map((d) => k(userId, `checkin:${goalId}:${d}`)));
   const fromDaily = counts.filter((c) => (c ?? 0) >= 1).length;
   if (fromDaily > 0) return fromDaily;
 
   // Legacy fallback: weekly key stored before per-day tracking
-  const legacyKey = `checkin:${goalId}:${getWeekKey(weekDates[0])}`;
+  const legacyKey = k(userId, `checkin:${goalId}:${getWeekKey(weekDates[0])}`);
   const legacy = await kv.get<number>(legacyKey);
   return (legacy ?? 0) >= 1 ? 1 : 0;
 }
 
 // Unified: completed count for the current period (days for weekly goals, raw count for daily)
-export async function getCompletedThisPeriod(goal: Goal): Promise<number> {
+export async function getCompletedThisPeriod(goal: Goal, userId?: string): Promise<number> {
   if (goal.frequency === "daily") {
-    return getCheckInsForPeriod(goal.id, getTodayDate());
+    return getCheckInsForPeriod(goal.id, getTodayDate(), userId);
   }
-  return getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(getTodayDate()));
+  return getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(getTodayDate()), userId);
 }
 
 // --- Goals ---
-export async function getGoals(): Promise<Goal[]> {
-  let goals = await kv.get<Goal[]>("goals");
+export async function getGoals(userId?: string): Promise<Goal[]> {
+  let goals = await kv.get<Goal[]>(k(userId, "goals"));
   if (!goals) {
-    await kv.set("goals", DEFAULT_GOALS);
-    return DEFAULT_GOALS;
+    // Only seed Alan's default goals for his namespace; other users start empty
+    if (!userId) {
+      await kv.set("goals", DEFAULT_GOALS);
+      return DEFAULT_GOALS;
+    }
+    return [];
   }
 
-  // Migrations applied on read
-  let changed = false;
+  // Migrations — Alan's namespace only
+  if (!userId) {
+    let changed = false;
 
-  if (!goals.find((g) => g.id === "sleep")) {
-    goals.push({ id: "sleep", name: "7+ hr sleep", emoji: "😴", frequency: "daily", targetCount: 1 });
-    changed = true;
+    if (!goals.find((g) => g.id === "sleep")) {
+      goals.push({ id: "sleep", name: "7+ hr sleep", emoji: "😴", frequency: "daily", targetCount: 1 });
+      changed = true;
+    }
+
+    if (!goals.find((g) => g.id === "emotional-checkin")) {
+      goals.push({
+        id: "emotional-checkin",
+        name: "Emotional Check-in",
+        emoji: "🧠",
+        frequency: "daily",
+        targetCount: 1,
+        type: "mood",
+      });
+      changed = true;
+    }
+
+    // Eye ointment bumped from 5x to 6x/week (June 2026)
+    const eyeGoal = goals.find((g) => g.name === "Eye ointment" && g.targetCount === 5);
+    if (eyeGoal) {
+      eyeGoal.targetCount = 6;
+      changed = true;
+    }
+
+    if (changed) await kv.set(k(userId, "goals"), goals);
   }
 
-  if (!goals.find((g) => g.id === "emotional-checkin")) {
-    goals.push({
-      id: "emotional-checkin",
-      name: "Emotional Check-in",
-      emoji: "🧠",
-      frequency: "daily",
-      targetCount: 1,
-      type: "mood",
-    });
-    changed = true;
-  }
-
-  // Eye ointment bumped from 5x to 6x/week (June 2026)
-  const eyeGoal = goals.find((g) => g.name === "Eye ointment" && g.targetCount === 5);
-  if (eyeGoal) {
-    eyeGoal.targetCount = 6;
-    changed = true;
-  }
-
-  if (changed) await kv.set("goals", goals);
   return goals;
 }
 
-export async function saveGoals(goals: Goal[]): Promise<void> {
-  await kv.set("goals", goals);
+export async function saveGoals(goals: Goal[], userId?: string): Promise<void> {
+  await kv.set(k(userId, "goals"), goals);
 }
 
 // --- Check-in records (individual events with timestamps) ---
-export async function getCheckInRecords(goalId: string, limit = 200): Promise<CheckInRecord[]> {
-  const raw = await kv.lrange<CheckInRecord>(`history:${goalId}`, 0, limit - 1);
+export async function getCheckInRecords(goalId: string, limit = 200, userId?: string): Promise<CheckInRecord[]> {
+  const raw = await kv.lrange<CheckInRecord>(k(userId, `history:${goalId}`), 0, limit - 1);
   return raw.sort((a, b) => b.timestamp - a.timestamp);
 }
 
 // --- Check-ins ---
 export async function getCheckInsForPeriod(
   goalId: string,
-  period: string
+  period: string,
+  userId?: string
 ): Promise<number> {
-  const count = await kv.get<number>(`checkin:${goalId}:${period}`);
+  const count = await kv.get<number>(k(userId, `checkin:${goalId}:${period}`));
   return count ?? 0;
 }
 
-export async function addCheckIn(goalId: string, date?: string): Promise<{ count: number }> {
-  const goals = await getGoals();
+export async function addCheckIn(goalId: string, date?: string, userId?: string): Promise<{ count: number }> {
+  const goals = await getGoals(userId);
   const goal = goals.find((g) => g.id === goalId);
   if (!goal) throw new Error("Goal not found");
 
   const targetDate = date || getTodayDate();
-  const newCount = await kv.incr(`checkin:${goalId}:${targetDate}`);
+  const newCount = await kv.incr(k(userId, `checkin:${goalId}:${targetDate}`));
 
   const record: CheckInRecord = {
     goalId,
@@ -177,18 +197,18 @@ export async function addCheckIn(goalId: string, date?: string): Promise<{ count
     date: targetDate,
     week: getWeekKey(targetDate),
   };
-  await kv.lpush(`history:${goalId}`, JSON.stringify(record));
+  await kv.lpush(k(userId, `history:${goalId}`), JSON.stringify(record));
 
   return { count: newCount };
 }
 
-export async function undoCheckIn(goalId: string): Promise<{ count: number }> {
-  const goals = await getGoals();
+export async function undoCheckIn(goalId: string, userId?: string): Promise<{ count: number }> {
+  const goals = await getGoals(userId);
   const goal = goals.find((g) => g.id === goalId);
   if (!goal) throw new Error("Goal not found");
 
   const today = getTodayDate();
-  const key = `checkin:${goalId}:${today}`;
+  const key = k(userId, `checkin:${goalId}:${today}`);
   const current = (await kv.get<number>(key)) ?? 0;
   if (current <= 0) return { count: 0 };
 
@@ -199,7 +219,8 @@ export async function undoCheckIn(goalId: string): Promise<{ count: number }> {
 // --- History ---
 export async function getHistory(
   goal: Goal,
-  periods: number
+  periods: number,
+  userId?: string
 ): Promise<{ period: string; count: number; done: boolean }[]> {
   const todayPST = getTodayDate();
   const [ty, tm, td] = todayPST.split("-").map(Number);
@@ -213,7 +234,7 @@ export async function getHistory(
     ].join("-"));
   }
 
-  const keys = labels.map((label) => `checkin:${goal.id}:${label}`);
+  const keys = labels.map((label) => k(userId, `checkin:${goal.id}:${label}`));
   const counts = await kv.mget<number[]>(...keys);
   return labels.map((period, i) => {
     const count = counts[i] ?? 0;
@@ -223,14 +244,14 @@ export async function getHistory(
 }
 
 // --- Streak calculation ---
-export async function getStreak(goal: Goal): Promise<number> {
+export async function getStreak(goal: Goal, userId?: string): Promise<number> {
   if (goal.frequency === "daily") {
-    return getDailyStreak(goal);
+    return getDailyStreak(goal, userId);
   }
-  return getWeeklyStreak(goal);
+  return getWeeklyStreak(goal, userId);
 }
 
-async function getDailyStreak(goal: Goal): Promise<number> {
+async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
   let streak = 0;
   const today = new Date();
 
@@ -238,7 +259,7 @@ async function getDailyStreak(goal: Goal): Promise<number> {
     const d = new Date(today);
     d.setDate(d.getDate() - i);
     const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(d);
-    const count = await kv.get<number>(`checkin:${goal.id}:${dateKey}`);
+    const count = await kv.get<number>(k(userId, `checkin:${goal.id}:${dateKey}`));
     if ((count ?? 0) >= goal.targetCount) {
       streak++;
     } else {
@@ -249,7 +270,7 @@ async function getDailyStreak(goal: Goal): Promise<number> {
   return streak;
 }
 
-async function getWeeklyStreak(goal: Goal): Promise<number> {
+async function getWeeklyStreak(goal: Goal, userId?: string): Promise<number> {
   let streak = 0;
   const todayStr = getTodayDate();
 
@@ -261,7 +282,7 @@ async function getWeeklyStreak(goal: Goal): Promise<number> {
       String(ref.getUTCMonth() + 1).padStart(2, "0"),
       String(ref.getUTCDate()).padStart(2, "0"),
     ].join("-");
-    const daysCompleted = await getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(refStr));
+    const daysCompleted = await getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(refStr), userId);
     if (daysCompleted >= goal.targetCount) {
       streak++;
     } else {
@@ -290,38 +311,39 @@ export function getLastPeriodKey(_goal: Goal): string {
   return getLastPeriodDateStr();
 }
 
-export async function getLastPeriodMissed(goal: Goal): Promise<boolean> {
-  const hasHistory = (await kv.llen(`history:${goal.id}`)) > 0;
+export async function getLastPeriodMissed(goal: Goal, userId?: string): Promise<boolean> {
+  const hasHistory = (await kv.llen(k(userId, `history:${goal.id}`))) > 0;
   if (!hasHistory) return false;
 
-  const count = await getCheckInsForPeriod(goal.id, getLastPeriodDateStr());
+  const count = await getCheckInsForPeriod(goal.id, getLastPeriodDateStr(), userId);
   return count === 0;
 }
 
 export async function getReflectionsForGoal(
   goalId: string,
-  periodKeys: string[]
+  periodKeys: string[],
+  userId?: string
 ): Promise<Record<string, string>> {
   if (periodKeys.length === 0) return {};
   const values = (await kv.mget(
-    ...periodKeys.map((k) => `reflection:${goalId}:${k}`)
+    ...periodKeys.map((pk) => k(userId, `reflection:${goalId}:${pk}`))
   )) as ({ text: string; savedAt: number } | null)[];
   const result: Record<string, string> = {};
-  periodKeys.forEach((k, i) => {
+  periodKeys.forEach((pk, i) => {
     const val = values[i];
-    if (val?.text) result[k] = val.text;
+    if (val?.text) result[pk] = val.text;
   });
   return result;
 }
 
 // --- Reflections ---
 
-export async function saveReflection(goalId: string, text: string): Promise<void> {
-  const goals = await getGoals();
+export async function saveReflection(goalId: string, text: string, userId?: string): Promise<void> {
+  const goals = await getGoals(userId);
   const goal = goals.find((g) => g.id === goalId);
   if (!goal) return;
   const periodKey = getLastPeriodKey(goal);
-  await kv.set(`reflection:${goalId}:${periodKey}`, { text, savedAt: Date.now() });
+  await kv.set(k(userId, `reflection:${goalId}:${periodKey}`), { text, savedAt: Date.now() });
 }
 
 // --- Weekly Notes ---
@@ -334,56 +356,56 @@ export function getWeekLabel(weekKey?: string): string {
   // weekKey format: "2026-W13"
   const [year, weekStr] = (weekKey || getWeekKey()).split("-W");
   const week = parseInt(weekStr, 10);
-  
+
   // Calculate the Monday of that week
   const jan4 = new Date(parseInt(year), 0, 4);
   const daysToMonday = (jan4.getDay() + 6) % 7;
   const firstMonday = new Date(jan4);
   firstMonday.setDate(jan4.getDate() - daysToMonday);
-  
+
   const targetMonday = new Date(firstMonday);
   targetMonday.setDate(firstMonday.getDate() + (week - 1) * 7);
-  
+
   const monthLabel = targetMonday.toLocaleDateString("en-US", { month: "short" });
   const dayLabel = targetMonday.getDate();
-  
+
   return `Week of ${monthLabel} ${dayLabel}`;
 }
 
-export async function getWeeklyNote(weekKey: string): Promise<WeeklyNote | null> {
-  const note = await kv.get<WeeklyNote>(`note:${weekKey}`);
+export async function getWeeklyNote(weekKey: string, userId?: string): Promise<WeeklyNote | null> {
+  const note = await kv.get<WeeklyNote>(k(userId, `note:${weekKey}`));
   return note;
 }
 
-export async function getAllWeeklyNotes(limit = 52): Promise<WeeklyNote[]> {
-  // Get all keys matching note:*
-  const keys = await kv.keys("note:*");
+export async function getAllWeeklyNotes(limit = 52, userId?: string): Promise<WeeklyNote[]> {
+  const prefix = userId ? `${userId}:note:` : "note:";
+  const keys = await kv.keys(`${prefix}*`);
   const notes: WeeklyNote[] = [];
-  
+
   for (const key of keys.slice(0, limit)) {
     const note = await kv.get<WeeklyNote>(key);
     if (note) notes.push(note);
   }
-  
+
   // Sort by week descending (newest first)
   return notes.sort((a, b) => b.week.localeCompare(a.week));
 }
 
-export async function saveWeeklyNote(note: Omit<WeeklyNote, "updatedAt">): Promise<void> {
+export async function saveWeeklyNote(note: Omit<WeeklyNote, "updatedAt">, userId?: string): Promise<void> {
   const fullNote: WeeklyNote = {
     ...note,
     updatedAt: Date.now(),
   };
-  await kv.set(`note:${note.week}`, fullNote);
+  await kv.set(k(userId, `note:${note.week}`), fullNote);
 }
 
-export async function deleteWeeklyNote(weekKey: string): Promise<void> {
-  await kv.del(`note:${weekKey}`);
+export async function deleteWeeklyNote(weekKey: string, userId?: string): Promise<void> {
+  await kv.del(k(userId, `note:${weekKey}`));
 }
 
 // --- Mood / Emotional Check-in ---
 
-export async function addMoodEntry(emoji: string, text: string): Promise<void> {
+export async function addMoodEntry(emoji: string, text: string, userId?: string): Promise<void> {
   const today = getTodayDate();
   const entry: MoodEntry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -392,24 +414,24 @@ export async function addMoodEntry(emoji: string, text: string): Promise<void> {
     emoji,
     text,
   };
-  await kv.rpush(`mood:${today}`, JSON.stringify(entry));
-  await kv.incr(`checkin:emotional-checkin:${today}`);
+  await kv.rpush(k(userId, `mood:${today}`), JSON.stringify(entry));
+  await kv.incr(k(userId, `checkin:emotional-checkin:${today}`));
 }
 
-export async function getMoodEntries(date: string): Promise<MoodEntry[]> {
-  const raw = await kv.lrange<string | MoodEntry>(`mood:${date}`, 0, -1);
+export async function getMoodEntries(date: string, userId?: string): Promise<MoodEntry[]> {
+  const raw = await kv.lrange<string | MoodEntry>(k(userId, `mood:${date}`), 0, -1);
   return raw.map((e) => (typeof e === "string" ? JSON.parse(e) : e));
 }
 
-export async function deleteMoodEntry(date: string, id: string): Promise<void> {
-  const raw = await kv.lrange<string | MoodEntry>(`mood:${date}`, 0, -1);
+export async function deleteMoodEntry(date: string, id: string, userId?: string): Promise<void> {
+  const raw = await kv.lrange<string | MoodEntry>(k(userId, `mood:${date}`), 0, -1);
   for (const item of raw) {
     const entry: MoodEntry = typeof item === "string" ? JSON.parse(item) : item;
     if (entry.id === id) {
       // lrem removes all list elements equal to this value
-      await kv.lrem(`mood:${date}`, 1, item);
+      await kv.lrem(k(userId, `mood:${date}`), 1, item);
       // Decrement the habit completion count for that day
-      const key = `checkin:emotional-checkin:${date}`;
+      const key = k(userId, `checkin:emotional-checkin:${date}`);
       const current = (await kv.get<number>(key)) ?? 0;
       if (current > 0) await kv.decr(key);
       return;
@@ -417,17 +439,18 @@ export async function deleteMoodEntry(date: string, id: string): Promise<void> {
   }
 }
 
-export async function getAllMoodEntries(limit = 90): Promise<MoodEntry[]> {
-  const keys = await kv.keys("mood:*");
+export async function getAllMoodEntries(limit = 90, userId?: string): Promise<MoodEntry[]> {
+  const prefix = userId ? `${userId}:mood:` : "mood:";
+  const keys = await kv.keys(`${prefix}*`);
   if (keys.length === 0) return [];
   const sorted = keys
-    .map((k) => k.replace("mood:", ""))
+    .map((key) => key.replace(prefix, ""))
     .sort()
     .reverse()
     .slice(0, limit);
   const all: MoodEntry[] = [];
   for (const date of sorted) {
-    const entries = await getMoodEntries(date);
+    const entries = await getMoodEntries(date, userId);
     all.push(...entries);
   }
   return all.sort((a, b) => b.timestamp - a.timestamp);
@@ -438,7 +461,7 @@ export async function seedInitialWeeklyNote(): Promise<void> {
   const weekKey = "2026-W13";
   const existing = await getWeeklyNote(weekKey);
   if (existing) return;
-  
+
   await saveWeeklyNote({
     week: weekKey,
     weekLabel: "Week of Mar 24",
