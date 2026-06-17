@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGoals, getCompletedThisPeriod, getCheckInsForPeriod, getTodayDate } from "@/lib/kv";
+import { getGoals, getCompletedThisPeriod, getCheckInsForPeriod, getTodayDate, resolveUser } from "@/lib/kv";
 import { Redis } from "@upstash/redis";
 
 const kv = new Redis({
@@ -17,16 +17,18 @@ function getTodayDOW(): number {
   ).getDay();
 }
 
-export async function GET() {
-  const topic = process.env.NTFY_ALAN_TOPIC;
+export async function GET(req: Request) {
+  const userId = resolveUser(new URL(req.url).searchParams.get("user"));
+  const topicKey = userId ? `NTFY_${userId.toUpperCase()}_NUDGE_TOPIC` : "NTFY_ALAN_TOPIC";
+  const topic = process.env[topicKey];
   if (!topic) {
-    return NextResponse.json({ error: "NTFY_ALAN_TOPIC not set" }, { status: 500 });
+    return NextResponse.json({ error: `${topicKey} not set` }, { status: 500 });
   }
 
   const todayDow = getTodayDOW();
   const today = getTodayPST();
 
-  const goals = await getGoals();
+  const goals = await getGoals(userId);
 
   const nudgeMessages: Record<string, { title: string; body: string }> = {
     sleep: {
@@ -44,17 +46,17 @@ export async function GET() {
 
   for (const goal of goals) {
     // Per-goal dedup — only nudge once per day
-    const sentKey = `remind:sent:${goal.id}:${today}`;
+    const sentKey = `remind:sent:${userId ?? "alan"}:${goal.id}:${today}`;
     if (await kv.get(sentKey)) continue;
 
     let shouldNudge = false;
     if (goal.frequency === "daily") {
-      const completed = await getCompletedThisPeriod(goal);
+      const completed = await getCompletedThisPeriod(goal, userId);
       shouldNudge = completed < goal.targetCount;
     } else if (goal.nudgeDays && goal.nudgeDays.includes(todayDow)) {
       const [completed, todayCount] = await Promise.all([
-        getCompletedThisPeriod(goal),
-        getCheckInsForPeriod(goal.id, getTodayDate()),
+        getCompletedThisPeriod(goal, userId),
+        getCheckInsForPeriod(goal.id, getTodayDate(), userId),
       ]);
       shouldNudge = completed < goal.targetCount && todayCount === 0;
     }

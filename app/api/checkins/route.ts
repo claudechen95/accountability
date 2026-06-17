@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { addCheckIn, undoCheckIn, getGoals, resolveUser } from "@/lib/kv";
 
 async function sendNotification(goalId: string, userId?: string) {
-  const topic = process.env.NTFY_TOPIC;
+  const topicKey = userId ? `NTFY_${userId.toUpperCase()}_TOPIC` : "NTFY_TOPIC";
+  const topic = process.env[topicKey] ?? process.env.NTFY_TOPIC;
   if (!topic) return;
 
   try {
