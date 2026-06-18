@@ -308,6 +308,7 @@ function GoalCard({
   dragHandleProps?: React.HTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> };
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [nameExpanded, setNameExpanded] = useState(false);
   const doneCard = goal.isDone;
   const doneCircle = isHandled(goal);
   const label = goal.frequency === "daily" ? "today" : "this week";
@@ -337,9 +338,9 @@ function GoalCard({
         )}
         <div className="flex flex-1 min-w-0 items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 min-w-0 cursor-pointer" onClick={() => setNameExpanded(e => !e)}>
             <span className="text-2xl flex-shrink-0">{goal.emoji}</span>
-            <h2 className="text-lg font-semibold text-gray-900 truncate">
+            <h2 className={`text-lg font-semibold text-gray-900 ${nameExpanded ? "break-words" : "truncate"}`}>
               {goal.name}
             </h2>
           </div>
