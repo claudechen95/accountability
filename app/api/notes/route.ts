@@ -9,6 +9,7 @@ import {
   seedInitialWeeklyNote,
   seedWeeklyNoteW22,
   seedWeeklyNoteW23,
+  seedWeeklyNoteW24,
   resolveUser,
 } from "@/lib/kv";
 
@@ -29,6 +30,7 @@ export async function GET(req: Request) {
       await seedInitialWeeklyNote();
       await seedWeeklyNoteW22();
       await seedWeeklyNoteW23();
+      await seedWeeklyNoteW24();
     }
     const notes = await getAllWeeklyNotes(52, user);
     return NextResponse.json(notes);

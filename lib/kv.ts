@@ -507,6 +507,26 @@ export async function seedInitialWeeklyNote(): Promise<void> {
   });
 }
 
+// Seed note for Jun 8, 2026 week (W24)
+export async function seedWeeklyNoteW24(): Promise<void> {
+  const weekKey = "2026-W24";
+  const existing = await getWeeklyNote(weekKey);
+  if (existing) return;
+
+  await saveWeeklyNote({
+    week: weekKey,
+    weekLabel: "Week of Jun 8",
+    headline: "Habit Bundling, Sunday Crunch & Sleep Reflection Bug",
+    notes: "Alan tends to push tasks to later in the day or to the weekend — this week it caught up with him when something came up Sunday and he lost the time he was counting on. The fix: set an alarm when you decide to do something later, not just a mental note. Also discussed habit bundling from Atomic Habits — pairing a new habit with an existing one (floss when you brush your teeth) lowers the activation energy. Sleep reflection entries are not showing in history; likely a bug to investigate.",
+    changes: [
+      "📖 Insight: Habit bundling — attach new habits to existing ones (e.g. floss right after brushing teeth)",
+      "⏰ Insight: Don't just defer tasks mentally — set an alarm at the moment you decide to do it later",
+      "⚠️ Bug: Reflections for 7+ hr sleep are not displaying in the history grid — needs investigation",
+      "📅 Pattern: Alan waited until Sunday to complete weekly habits, but an unexpected event wiped out that buffer",
+    ],
+  });
+}
+
 // Seed note for Jun 1, 2026 week (W23)
 export async function seedWeeklyNoteW23(): Promise<void> {
   const weekKey = "2026-W23";
