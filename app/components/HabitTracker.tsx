@@ -335,7 +335,7 @@ function GoalCard({
             </svg>
           </button>
         )}
-        <div className="flex flex-1 items-start justify-between gap-3">
+        <div className="flex flex-1 min-w-0 items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 min-w-0">
             <span className="text-2xl flex-shrink-0">{goal.emoji}</span>
