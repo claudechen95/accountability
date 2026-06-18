@@ -337,8 +337,8 @@ function GoalCard({
         )}
         <div className="flex flex-1 items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-2xl">{goal.emoji}</span>
+          <div className="flex items-center gap-2 mb-1 min-w-0">
+            <span className="text-2xl flex-shrink-0">{goal.emoji}</span>
             <h2 className="text-lg font-semibold text-gray-900 truncate">
               {goal.name}
             </h2>

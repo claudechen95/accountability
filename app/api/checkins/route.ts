@@ -14,7 +14,7 @@ async function sendNotification(goalId: string, userId?: string) {
     const res = await fetch(`https://ntfy.sh/${topic}`, {
       method: "POST",
       headers: {
-        "Title": "Alan checked in",
+        "Title": `${userId ? userId.charAt(0).toUpperCase() + userId.slice(1) : "Alan"} checked in`,
         "Tags": "white_check_mark",
         "Content-Type": "text/plain",
       },
