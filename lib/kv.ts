@@ -456,6 +456,37 @@ export async function getAllMoodEntries(limit = 90, userId?: string): Promise<Mo
   return all.sort((a, b) => b.timestamp - a.timestamp);
 }
 
+export interface JournalEntry {
+  id: string;
+  timestamp: number;
+  text: string;
+}
+
+export async function addJournalEntry(text: string, userId?: string): Promise<void> {
+  const entry: JournalEntry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: Date.now(),
+    text,
+  };
+  await kv.lpush(k(userId, "journal"), JSON.stringify(entry));
+}
+
+export async function getJournalEntries(limit = 100, userId?: string): Promise<JournalEntry[]> {
+  const raw = await kv.lrange<string | JournalEntry>(k(userId, "journal"), 0, limit - 1);
+  return raw.map((e) => (typeof e === "string" ? JSON.parse(e) : e));
+}
+
+export async function deleteJournalEntry(id: string, userId?: string): Promise<void> {
+  const raw = await kv.lrange<string | JournalEntry>(k(userId, "journal"), 0, -1);
+  for (const item of raw) {
+    const entry: JournalEntry = typeof item === "string" ? JSON.parse(item) : item;
+    if (entry.id === id) {
+      await kv.lrem(k(userId, "journal"), 1, item);
+      return;
+    }
+  }
+}
+
 // Seed initial note for March 23, 2026 week (W13)
 export async function seedInitialWeeklyNote(): Promise<void> {
   const weekKey = "2026-W13";
