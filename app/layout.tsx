@@ -3,7 +3,7 @@ import "./globals.css";
 import BottomNav from "./components/BottomNav";
 
 export const metadata: Metadata = {
-  title: "Alan's Check-ins",
+  title: "Accountability Tracker",
   description: "Daily accountability tracker",
 };
 

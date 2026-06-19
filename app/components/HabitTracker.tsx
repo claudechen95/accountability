@@ -569,7 +569,7 @@ export function HomePage({ userId }: { userId?: string }) {
       setMoodModalOpen(true);
       return;
     }
-    if (goal?.lastPeriodMissed && goal.completedThisPeriod === 0) {
+    if (goal?.lastPeriodMissed && goal.todayCount === 0) {
       setReflectionTarget(goal);
     } else {
       doCheckIn(goalId);
