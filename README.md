@@ -50,38 +50,15 @@ Each user gets a fully isolated namespace in Redis. Data never crosses between u
 
 ### Adding a new user
 
-> **Always ADD to the `USERS` array — never replace an existing entry.** Existing users have real data even if they look like placeholders.
+```bash
+./scripts/add-user.sh <id> "<Label>"
+# Example:
+./scripts/add-user.sh alice "Alice"
+```
 
-1. Add to `USERS` in `app/page.tsx`:
-   ```ts
-   { id: "newuser", label: "New User" }
-   ```
+This handles everything: generates ntfy topic names, adds them to `.env.local` and Vercel, updates `app/page.tsx`, commits, and deploys. It prints the ntfy subscribe URLs at the end for the new user to add on their phone.
 
-2. Create **two** notification topics (pick hard-to-guess names) and add both in `.env.local` and Vercel:
-
-   | Purpose | Env var |
-   |---------|---------|
-   | Habit completed | `NTFY_NEWUSER_TOPIC` |
-   | Nudge reminder | `NTFY_NEWUSER_NUDGE_TOPIC` |
-
-   ```bash
-   # .env.local
-   NTFY_NEWUSER_TOPIC="newuser-checkins-abc123"
-   NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-def456"
-
-   # Vercel
-   echo "newuser-checkins-abc123" | vercel env add NTFY_NEWUSER_TOPIC production
-   echo "newuser-nudge-def456"    | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production
-   ```
-
-3. Commit and push:
-   ```bash
-   git add app/page.tsx
-   git commit -m "feat: add <name> as new user"
-   git push
-   ```
-
-4. Confirm the new link appears on the landing page. No Redis setup needed — same database, automatically isolated under `{userid}:` key prefix.
+No Redis setup needed — same database, automatically isolated under `{userid}:` key prefix.
 
 ## Managing Goals
 

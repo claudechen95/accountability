@@ -19,47 +19,26 @@ Users are identified by URL path (`/alan`, `/rochisha`). All API routes read `?u
 
 All data is fully isolated: goals, checkins, history, reflections, mood, weekly notes, journal, settings, notification dedup flags.
 
-### Adding a new user (complete checklist)
+### Adding a new user
 
-> **Critical:** always ADD to the `USERS` array — never replace an existing entry. Existing users have real data even if they look like placeholders.
+Use the script — it handles everything in one command:
 
-1. **Landing page** — add to `USERS` in `app/page.tsx`:
-   ```ts
-   { id: "newuser", label: "New User" }
-   ```
+```bash
+./scripts/add-user.sh <id> "<Label>"
+# Example:
+./scripts/add-user.sh alice "Alice"
+```
 
-2. **Notification topics** — each user needs **two** topics (pick hard-to-guess names for both):
+The script:
+1. Generates two random ntfy topic names (`{id}-checkins-{hex}` and `{id}-nudge-{hex}`)
+2. Appends both to `.env.local`
+3. Pushes both to Vercel via `vercel env add`
+4. Adds the user to `app/page.tsx`
+5. Commits and pushes — Vercel auto-deploys
 
-   | Purpose | Env var | Used by |
-   |---------|---------|---------|
-   | Habit completed | `NTFY_NEWUSER_TOPIC` | `app/api/checkins/route.ts` |
-   | Nudge reminder | `NTFY_NEWUSER_NUDGE_TOPIC` | `app/api/remind/route.ts` |
+At the end it prints the two ntfy URLs for the user to subscribe to on their phone.
 
-   Add both in `.env.local` and Vercel:
-   ```bash
-   # Generate two random suffixes
-   openssl rand -hex 3  # e.g. a1b2c3
-   openssl rand -hex 3  # e.g. d4e5f6
-
-   # .env.local
-   NTFY_NEWUSER_TOPIC="newuser-checkins-a1b2c3"
-   NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-d4e5f6"
-
-   # Vercel
-   echo "newuser-checkins-a1b2c3" | vercel env add NTFY_NEWUSER_TOPIC production
-   echo "newuser-nudge-d4e5f6"    | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production
-   ```
-
-3. **Commit & deploy** — commit `app/page.tsx` and push; Vercel auto-deploys from `main`:
-   ```bash
-   git add app/page.tsx
-   git commit -m "feat: add <name> as new user"
-   git push   # or: npm run deploy
-   ```
-
-4. **Verify** — check the landing page at https://accountability-azure.vercel.app/ and confirm the new user link appears. New user starts with an empty goal list at `/{id}`.
-
-No Redis setup needed — the same database is shared; data is automatically isolated under the `{userId}:` key prefix.
+> **Never edit `USERS` in `app/page.tsx` by hand to add a user** — use the script so the env vars are always created alongside the code change.
 
 ### Notification env vars per user
 
