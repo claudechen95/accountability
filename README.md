@@ -57,13 +57,21 @@ Each user gets a fully isolated namespace in Redis. Data never crosses between u
    { id: "newuser", label: "New User" }
    ```
 
-2. Create a notification topic (pick a hard-to-guess name) and add it in two places:
+2. Create **two** notification topics (pick hard-to-guess names) and add both in `.env.local` and Vercel:
+
+   | Purpose | Env var |
+   |---------|---------|
+   | Habit completed | `NTFY_NEWUSER_TOPIC` |
+   | Nudge reminder | `NTFY_NEWUSER_NUDGE_TOPIC` |
+
    ```bash
    # .env.local
-   NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-abc123"
+   NTFY_NEWUSER_TOPIC="newuser-checkins-abc123"
+   NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-def456"
 
    # Vercel
-   echo "newuser-nudge-abc123" | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production
+   echo "newuser-checkins-abc123" | vercel env add NTFY_NEWUSER_TOPIC production
+   echo "newuser-nudge-def456"    | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production
    ```
 
 3. Commit and push:

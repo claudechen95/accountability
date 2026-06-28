@@ -28,10 +28,27 @@ All data is fully isolated: goals, checkins, history, reflections, mood, weekly 
    { id: "newuser", label: "New User" }
    ```
 
-2. **Notification topic** — pick a hard-to-guess topic name (e.g. `newuser-nudge-abc123`) and add it in two places:
-   - `.env.local`: `NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-abc123"`
-   - Vercel: `echo "newuser-nudge-abc123" | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production`
-   - The remind route resolves the key as `NTFY_{USERID_UPPERCASE}_NUDGE_TOPIC`
+2. **Notification topics** — each user needs **two** topics (pick hard-to-guess names for both):
+
+   | Purpose | Env var | Used by |
+   |---------|---------|---------|
+   | Habit completed | `NTFY_NEWUSER_TOPIC` | `app/api/checkins/route.ts` |
+   | Nudge reminder | `NTFY_NEWUSER_NUDGE_TOPIC` | `app/api/remind/route.ts` |
+
+   Add both in `.env.local` and Vercel:
+   ```bash
+   # Generate two random suffixes
+   openssl rand -hex 3  # e.g. a1b2c3
+   openssl rand -hex 3  # e.g. d4e5f6
+
+   # .env.local
+   NTFY_NEWUSER_TOPIC="newuser-checkins-a1b2c3"
+   NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-d4e5f6"
+
+   # Vercel
+   echo "newuser-checkins-a1b2c3" | vercel env add NTFY_NEWUSER_TOPIC production
+   echo "newuser-nudge-d4e5f6"    | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production
+   ```
 
 3. **Commit & deploy** — commit `app/page.tsx` and push; Vercel auto-deploys from `main`:
    ```bash
@@ -45,9 +62,15 @@ All data is fully isolated: goals, checkins, history, reflections, mood, weekly 
 No Redis setup needed — the same database is shared; data is automatically isolated under the `{userId}:` key prefix.
 
 ### Notification env vars per user
-- Alan: `NTFY_ALAN_TOPIC` (legacy key, used when `userId` is `undefined`)
-- Rochisha: `NTFY_ROCHISHA_NUDGE_TOPIC`
-- Pattern for future users: `NTFY_{USER_UPPER}_NUDGE_TOPIC`
+
+Each user needs two env vars:
+
+| User | Completed habit | Nudge reminder |
+|------|----------------|----------------|
+| Alan | `NTFY_TOPIC` (legacy) | `NTFY_ALAN_TOPIC` |
+| Claude | `NTFY_CLAUDE_TOPIC` | `NTFY_CLAUDE_NUDGE_TOPIC` |
+| Rochisha | `NTFY_ROCHISHA_TOPIC` | `NTFY_ROCHISHA_NUDGE_TOPIC` |
+| Future | `NTFY_{USER_UPPER}_TOPIC` | `NTFY_{USER_UPPER}_NUDGE_TOPIC` |
 
 ## Data model
 Goals are stored as a JSON array at Redis key `goals` (Alan) or `{userId}:goals` (others).
