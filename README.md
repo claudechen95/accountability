@@ -50,9 +50,30 @@ Each user gets a fully isolated namespace in Redis. Data never crosses between u
 
 ### Adding a new user
 
-1. Add `{ id: "newuser", label: "New User" }` to `USERS` in `app/page.tsx`.
-2. Add `NTFY_NEWUSER_NUDGE_TOPIC` env var for push notifications (optional).
-3. Done — new user starts with an empty goal list and can add goals from the UI.
+> **Always ADD to the `USERS` array — never replace an existing entry.** Existing users have real data even if they look like placeholders.
+
+1. Add to `USERS` in `app/page.tsx`:
+   ```ts
+   { id: "newuser", label: "New User" }
+   ```
+
+2. Create a notification topic (pick a hard-to-guess name) and add it in two places:
+   ```bash
+   # .env.local
+   NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-abc123"
+
+   # Vercel
+   echo "newuser-nudge-abc123" | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production
+   ```
+
+3. Commit and push:
+   ```bash
+   git add app/page.tsx
+   git commit -m "feat: add <name> as new user"
+   git push
+   ```
+
+4. Confirm the new link appears on the landing page. No Redis setup needed — same database, automatically isolated under `{userid}:` key prefix.
 
 ## Managing Goals
 

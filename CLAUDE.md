@@ -19,10 +19,30 @@ Users are identified by URL path (`/alan`, `/rochisha`). All API routes read `?u
 
 All data is fully isolated: goals, checkins, history, reflections, mood, weekly notes, journal, settings, notification dedup flags.
 
-### Adding a new user
-1. Add `{ id: "newuser", label: "New User" }` to `USERS` in `app/page.tsx`.
-2. Add `NTFY_NEWUSER_NUDGE_TOPIC` env var in Vercel (and `.env.local`) for push notifications.
-3. Done — new user starts with an empty goal list.
+### Adding a new user (complete checklist)
+
+> **Critical:** always ADD to the `USERS` array — never replace an existing entry. Existing users have real data even if they look like placeholders.
+
+1. **Landing page** — add to `USERS` in `app/page.tsx`:
+   ```ts
+   { id: "newuser", label: "New User" }
+   ```
+
+2. **Notification topic** — pick a hard-to-guess topic name (e.g. `newuser-nudge-abc123`) and add it in two places:
+   - `.env.local`: `NTFY_NEWUSER_NUDGE_TOPIC="newuser-nudge-abc123"`
+   - Vercel: `echo "newuser-nudge-abc123" | vercel env add NTFY_NEWUSER_NUDGE_TOPIC production`
+   - The remind route resolves the key as `NTFY_{USERID_UPPERCASE}_NUDGE_TOPIC`
+
+3. **Commit & deploy** — commit `app/page.tsx` and push; Vercel auto-deploys from `main`:
+   ```bash
+   git add app/page.tsx
+   git commit -m "feat: add <name> as new user"
+   git push   # or: npm run deploy
+   ```
+
+4. **Verify** — check the landing page at https://accountability-azure.vercel.app/ and confirm the new user link appears. New user starts with an empty goal list at `/{id}`.
+
+No Redis setup needed — the same database is shared; data is automatically isolated under the `{userId}:` key prefix.
 
 ### Notification env vars per user
 - Alan: `NTFY_ALAN_TOPIC` (legacy key, used when `userId` is `undefined`)
