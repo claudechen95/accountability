@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getUsers, addUser } from "@/lib/kv";
+import { getUsers, addUser, removeUser } from "@/lib/kv";
 
 export async function GET() {
   return NextResponse.json(await getUsers());
@@ -11,5 +11,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "id and label required" }, { status: 400 });
   }
   await addUser(id, label, checkinTopic, nudgeTopic);
+  return NextResponse.json({ ok: true });
+}
+
+export async function DELETE(req: Request) {
+  const { id } = await req.json();
+  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+  await removeUser(id);
   return NextResponse.json({ ok: true });
 }

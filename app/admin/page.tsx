@@ -1,5 +1,6 @@
 import { getUsers, type UserRecord } from "@/lib/kv";
 import AddUserForm from "./AddUserForm";
+import DeleteUserButton from "./DeleteUserButton";
 
 function resolveTopics(user: UserRecord) {
   const upper = user.id.toUpperCase();
@@ -31,7 +32,10 @@ export default async function AdminPage() {
             <div key={user.id} className="bg-white rounded-2xl border border-gray-200 px-5 py-4">
               <div className="flex items-center justify-between mb-3">
                 <span className="font-semibold text-gray-900">{user.label}</span>
-                <span className="text-sm text-gray-400 font-mono">/{user.id}</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400 font-mono">/{user.id}</span>
+                  <DeleteUserButton id={user.id} label={user.label} />
+                </div>
               </div>
               <div className="space-y-1.5">
                 <TopicRow label="Completions" topic={checkin} />

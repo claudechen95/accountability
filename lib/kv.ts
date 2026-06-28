@@ -641,6 +641,11 @@ export async function addUser(
   await kv.set("users", users);
 }
 
+export async function removeUser(id: string): Promise<void> {
+  const users = await getUsers();
+  await kv.set("users", users.filter((u) => u.id !== id));
+}
+
 // Resolve ntfy topic: checks Redis UserRecord first, falls back to env vars for existing users.
 export async function getNtfyTopic(
   userId: string | undefined,
