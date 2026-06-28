@@ -565,15 +565,15 @@ export function HomePage({ userId }: { userId?: string }) {
 
   const handleCheckIn = (goalId: string) => {
     const goal = goals.find((g) => g.id === goalId);
+    if (goal?.lastPeriodMissed && goal.todayCount === 0) {
+      setReflectionTarget(goal);
+      return;
+    }
     if (goal?.type === "mood") {
       setMoodModalOpen(true);
       return;
     }
-    if (goal?.lastPeriodMissed && goal.todayCount === 0) {
-      setReflectionTarget(goal);
-    } else {
-      doCheckIn(goalId);
-    }
+    doCheckIn(goalId);
   };
 
   const handleMoodSubmit = async (emoji: string, text: string) => {
@@ -596,6 +596,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const handleReflectionSubmit = async (text: string) => {
     if (!reflectionTarget) return;
     const goalId = reflectionTarget.id;
+    const isMood = reflectionTarget.type === "mood";
     setReflectionTarget(null);
     if (text.trim()) {
       await fetch(`/api/reflections${q}`, {
@@ -604,14 +605,23 @@ export function HomePage({ userId }: { userId?: string }) {
         body: JSON.stringify({ goalId, text }),
       });
     }
-    await doCheckIn(goalId);
+    if (isMood) {
+      setMoodModalOpen(true);
+    } else {
+      await doCheckIn(goalId);
+    }
   };
 
   const handleReflectionSkip = async () => {
     if (!reflectionTarget) return;
+    const isMood = reflectionTarget.type === "mood";
     const goalId = reflectionTarget.id;
     setReflectionTarget(null);
-    await doCheckIn(goalId);
+    if (isMood) {
+      setMoodModalOpen(true);
+    } else {
+      await doCheckIn(goalId);
+    }
   };
 
   const handleUndo = async (goalId: string) => {

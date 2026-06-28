@@ -30,16 +30,20 @@ export async function GET(req: Request) {
 
   const goals = await getGoals(userId);
 
+  const displayName = userId
+    ? userId.charAt(0).toUpperCase() + userId.slice(1)
+    : "Alan";
+
   const nudgeMessages: Record<string, { title: string; body: string }> = {
     sleep: {
       title: "Still awake?",
-      body: "It's 10PM and you haven't logged sleep yet. You know what happens when you don't sleep, Alan. Everything gets worse.",
+      body: `It's 10PM and you haven't logged sleep yet. You know what happens when you don't sleep, ${displayName}. Everything gets worse.`,
     },
   };
 
   const fallback = (g: { emoji: string; name: string }) => ({
     title: "Seriously? Still?",
-    body: `${g.emoji} ${g.name} — still not done. What are you even doing with your life, Alan.`,
+    body: `${g.emoji} ${g.name} — still not done. What are you even doing with your life, ${displayName}.`,
   });
 
   const sent: string[] = [];

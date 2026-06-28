@@ -2,7 +2,7 @@ import Link from "next/link";
 
 const USERS = [
   { id: "alan", label: "Alan" },
-  { id: "claude", label: "Claude" },
+  { id: "rochisha", label: "Rochisha" },
 ];
 
 const PILLARS = [

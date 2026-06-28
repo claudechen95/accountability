@@ -157,6 +157,16 @@ export async function getGoals(userId?: string): Promise<Goal[]> {
       changed = true;
     }
 
+    // Salad upgraded from 6x/week to daily (June 2026); preserve weekly streak as offset
+    const saladGoal = goals.find((g) => g.id === "salad" && g.frequency === "weekly");
+    if (saladGoal) {
+      const oldWeeklyStreak = await getWeeklyStreak(saladGoal, userId);
+      saladGoal.streakOffset = oldWeeklyStreak * 7;
+      saladGoal.frequency = "daily";
+      saladGoal.targetCount = 1;
+      changed = true;
+    }
+
     if (changed) await kv.set(k(userId, "goals"), goals);
   }
 
@@ -266,6 +276,10 @@ async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
       // Don't break on today if not yet checked in
       if (i > 0) break;
     }
+  }
+  // Add any streak days preserved from a prior frequency change
+  if (streak > 0 && goal.streakOffset) {
+    streak += goal.streakOffset;
   }
   return streak;
 }
@@ -416,6 +430,13 @@ export async function addMoodEntry(emoji: string, text: string, userId?: string)
   };
   await kv.rpush(k(userId, `mood:${today}`), JSON.stringify(entry));
   await kv.incr(k(userId, `checkin:emotional-checkin:${today}`));
+  const historyRecord: CheckInRecord = {
+    goalId: "emotional-checkin",
+    timestamp: entry.timestamp,
+    date: today,
+    week: getWeekKey(today),
+  };
+  await kv.lpush(k(userId, `history:emotional-checkin`), JSON.stringify(historyRecord));
 }
 
 export async function getMoodEntries(date: string, userId?: string): Promise<MoodEntry[]> {
@@ -508,6 +529,27 @@ export async function seedInitialWeeklyNote(): Promise<void> {
 }
 
 // Seed note for Jun 8, 2026 week (W24)
+export async function seedWeeklyNoteW25(): Promise<void> {
+  const weekKey = "2026-W25";
+  const existing = await getWeeklyNote(weekKey);
+  if (existing) return;
+
+  await saveWeeklyNote({
+    week: weekKey,
+    weekLabel: "Week of Jun 15",
+    headline: "Salad Goes Daily, Notification Fatigue & Emotional Check-in Rethink",
+    notes: "Solid week overall with a few patterns worth fixing. Salad has been consistent for 5 straight weeks so we're upgrading it to a daily goal. The app incorrectly showed a 'missed yesterday' warning for a 6x weekly goal — a bug to fix. Stretch is still getting crammed into the weekend; the plan is to try one weekday session (Friday) to spread it out. Notification fatigue came up: nudging every day trains you to ignore it, so each habit's nudge days should be set intentionally. Emotional check-ins mostly logged as neutral because they happen at calm moments — new approach is to reflect on emotions felt throughout the day, even hours earlier, and log those.",
+    changes: [
+      "🥗 Updated: Salad goal upgraded from 6x/week to daily (5 weeks of strong consistency)",
+      "🐛 Bug: Salad incorrectly shows 'missed yesterday' warning for a 6x/week goal — needs fix",
+      "🐛 Bug: Reflection popup not appearing for Sleep, Stretch, or Emotional Check-in — needs investigation",
+      "🔔 Insight: Nudging every day causes notification fatigue — review and set intentional nudge days per habit",
+      "🧘 Plan: Add one weekday stretch session (Friday) instead of cramming both into the weekend",
+      "💭 Insight: Log emotional check-ins based on emotions felt throughout the day, not just the current moment",
+    ],
+  });
+}
+
 export async function seedWeeklyNoteW24(): Promise<void> {
   const weekKey = "2026-W24";
   const existing = await getWeeklyNote(weekKey);

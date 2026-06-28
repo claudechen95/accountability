@@ -8,6 +8,7 @@ export interface Goal {
   nudgeTime?: string;  // "HH:MM" PST 24hr, default "21:00"
   type?: "mood";
   order?: number;
+  streakOffset?: number; // legacy streak days preserved across frequency changes
 }
 
 export interface MoodEntry {

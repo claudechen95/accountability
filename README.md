@@ -1,6 +1,6 @@
-# Alan's Accountability Tracker
+# Accountability Tracker
 
-A simple daily/weekly check-in site.
+A personal daily/weekly habit check-in app. Multi-user — each person gets their own isolated dashboard at `/{username}`.
 
 ## Local Development
 
@@ -15,7 +15,11 @@ A simple daily/weekly check-in site.
 
 ```bash
 cp .env.local.example .env.local
-# Edit .env.local and paste your KV_REST_API_URL and KV_REST_API_TOKEN
+# Edit .env.local and fill in:
+#   UPSTASH_REDIS_REST_URL
+#   UPSTASH_REDIS_REST_TOKEN
+#   NTFY_ALAN_TOPIC          (push notifications for Alan)
+#   NTFY_ROCHISHA_NUDGE_TOPIC  (push notifications for Rochisha)
 ```
 
 ### 3. Run locally
@@ -33,24 +37,43 @@ npm i -g vercel
 vercel
 ```
 
-Then in the Vercel dashboard:
-1. Go to your project → **Storage** → **Connect Store** → **KV**
-2. Create or connect an Upstash Redis instance
-3. Vercel will auto-inject the env vars
+Then in the Vercel dashboard, add all env vars under **Settings → Environment Variables**.
 
-Or add the env vars manually under **Settings → Environment Variables**.
+## Multi-user
 
-## Adding / Editing Goals
+Each user gets a fully isolated namespace in Redis. Data never crosses between users.
 
-The two default goals are seeded automatically on first load:
-- 🏋️ Gym session (1x weekly)
-- 🥤 Protein drink (1x daily)
+| User | URL | Redis prefix |
+|------|-----|--------------|
+| Alan | `/alan` | *(none — legacy unprefixed keys)* |
+| Rochisha | `/rochisha` | `rochisha:` |
 
-To add or change goals, `POST /api/goals` with:
-```json
+### Adding a new user
+
+1. Add `{ id: "newuser", label: "New User" }` to `USERS` in `app/page.tsx`.
+2. Add `NTFY_NEWUSER_NUDGE_TOPIC` env var for push notifications (optional).
+3. Done — new user starts with an empty goal list and can add goals from the UI.
+
+## Managing Goals
+
+Goals are managed from the UI (drag to reorder, check off habits). To add or change goals via API:
+
+```bash
+# Add a goal
+POST /api/goals?user=rochisha
 { "id": "my-goal", "name": "My Goal", "emoji": "🎯", "frequency": "daily", "targetCount": 1 }
+
+# Delete a goal
+DELETE /api/goals?user=rochisha
+{ "id": "my-goal" }
 ```
 
-To delete: `DELETE /api/goals` with `{ "id": "my-goal" }`.
+## Push Notifications
 
-> A future admin UI can be added for managing goals without needing to hit the API directly.
+Nudges are sent via [ntfy.sh](https://ntfy.sh). Each user needs their own topic env var:
+
+- Alan: `NTFY_ALAN_TOPIC`
+- Rochisha: `NTFY_ROCHISHA_NUDGE_TOPIC`
+- Pattern for new users: `NTFY_{USER_UPPER}_NUDGE_TOPIC`
+
+Trigger a nudge check manually: `GET /api/remind?user=rochisha`
