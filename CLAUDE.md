@@ -21,24 +21,18 @@ All data is fully isolated: goals, checkins, history, reflections, mood, weekly 
 
 ### Adding a new user
 
-Use the script — it handles everything in one command:
+**Option A — Admin UI (no terminal needed):**
+Go to `/admin`, fill in user ID + display name, click Add. Topics are generated and stored in Redis automatically. The user appears on the landing page immediately. No deployment, no env vars.
 
+**Option B — Script (from terminal):**
 ```bash
-./scripts/add-user.sh <id> "<Label>"
+node scripts/add-user.mjs <id> "<Label>"
 # Example:
-./scripts/add-user.sh alice "Alice"
+node scripts/add-user.mjs alice "Alice"
 ```
+Writes directly to Redis. Prints the ntfy subscribe URLs. No deployment needed.
 
-The script:
-1. Generates two random ntfy topic names (`{id}-checkins-{hex}` and `{id}-nudge-{hex}`)
-2. Appends both to `.env.local`
-3. Pushes both to Vercel via `vercel env add`
-4. Adds the user to `app/page.tsx`
-5. Commits and pushes — Vercel auto-deploys
-
-At the end it prints the two ntfy URLs for the user to subscribe to on their phone.
-
-> **Never edit `USERS` in `app/page.tsx` by hand to add a user** — use the script so the env vars are always created alongside the code change.
+Topics are stored inside the `UserRecord` in Redis (`checkinTopic`, `nudgeTopic`). The checkins and remind routes resolve topics from Redis first, falling back to env vars for Alan/Claude/Rochisha whose topics were set before this system existed.
 
 ### Notification env vars per user
 

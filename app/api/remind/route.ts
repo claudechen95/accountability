@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGoals, getCompletedThisPeriod, getCheckInsForPeriod, getTodayDate, resolveUser } from "@/lib/kv";
+import { getGoals, getCompletedThisPeriod, getCheckInsForPeriod, getTodayDate, resolveUser, getNtfyTopic } from "@/lib/kv";
 import { Redis } from "@upstash/redis";
 
 const kv = new Redis({
@@ -19,10 +19,10 @@ function getTodayDOW(): number {
 
 export async function GET(req: Request) {
   const userId = resolveUser(new URL(req.url).searchParams.get("user"));
-  const topicKey = userId ? `NTFY_${userId.toUpperCase()}_NUDGE_TOPIC` : "NTFY_ALAN_TOPIC";
-  const topic = process.env[topicKey];
+  const topic = await getNtfyTopic(userId, "nudge");
   if (!topic) {
-    return NextResponse.json({ error: `${topicKey} not set` }, { status: 500 });
+    const key = userId ? `NTFY_${userId.toUpperCase()}_NUDGE_TOPIC` : "NTFY_ALAN_TOPIC";
+    return NextResponse.json({ error: `${key} not set` }, { status: 500 });
   }
 
   const todayDow = getTodayDOW();

@@ -606,3 +606,55 @@ export async function seedWeeklyNoteW22(): Promise<void> {
     ],
   });
 }
+
+// --- User registry ---
+
+export interface UserRecord {
+  id: string;
+  label: string;
+  checkinTopic?: string; // ntfy topic for habit completions
+  nudgeTopic?: string;   // ntfy topic for nudge reminders
+}
+
+const DEFAULT_USERS: UserRecord[] = [
+  { id: "alan", label: "Alan" },
+  { id: "claude", label: "Claude" },
+  { id: "rochisha", label: "Rochisha" },
+];
+
+export async function getUsers(): Promise<UserRecord[]> {
+  const stored = await kv.get<UserRecord[]>("users");
+  if (stored && stored.length > 0) return stored;
+  await kv.set("users", DEFAULT_USERS);
+  return DEFAULT_USERS;
+}
+
+export async function addUser(
+  id: string,
+  label: string,
+  checkinTopic?: string,
+  nudgeTopic?: string
+): Promise<void> {
+  const users = await getUsers();
+  if (users.find((u) => u.id === id)) return;
+  users.push({ id, label, checkinTopic, nudgeTopic });
+  await kv.set("users", users);
+}
+
+// Resolve ntfy topic: checks Redis UserRecord first, falls back to env vars for existing users.
+export async function getNtfyTopic(
+  userId: string | undefined,
+  type: "checkin" | "nudge"
+): Promise<string | null> {
+  const users = await getUsers();
+  const user = users.find((u) => u.id === (userId ?? "alan"));
+  if (type === "checkin" && user?.checkinTopic) return user.checkinTopic;
+  if (type === "nudge" && user?.nudgeTopic) return user.nudgeTopic;
+
+  // Fall back to env vars (for users whose topics were set before the admin UI)
+  const upper = (userId ?? "").toUpperCase();
+  if (type === "checkin") {
+    return process.env[userId ? `NTFY_${upper}_TOPIC` : "NTFY_TOPIC"] ?? process.env.NTFY_TOPIC ?? null;
+  }
+  return process.env[userId ? `NTFY_${upper}_NUDGE_TOPIC` : "NTFY_ALAN_TOPIC"] ?? null;
+}

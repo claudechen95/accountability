@@ -1,10 +1,5 @@
 import Link from "next/link";
-
-const USERS = [
-  { id: "alan", label: "Alan" },
-  { id: "rochisha", label: "Rochisha" },
-  { id: "claude", label: "Claude" },
-];
+import { getUsers } from "@/lib/kv";
 
 const PILLARS = [
   {
@@ -21,7 +16,9 @@ const PILLARS = [
   },
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const users = await getUsers();
+
   return (
     <main className="min-h-screen bg-[#f8f7f4] flex flex-col">
       <section className="flex-1 flex flex-col justify-center px-6 py-20 max-w-lg mx-auto w-full">
@@ -52,7 +49,7 @@ export default function LandingPage() {
         </div>
 
         <div className="flex flex-col gap-3">
-          {USERS.map(({ id, label }) => (
+          {users.map(({ id, label }) => (
             <Link
               key={id}
               href={`/${id}`}
