@@ -306,38 +306,44 @@ function ReflectionModal({
 
 
 function NudgeAckModal({
-  goals,
+  goal,
+  index,
+  total,
   onAcknowledge,
 }: {
-  goals: GoalStatus[];
+  goal: GoalStatus;
+  index: number;
+  total: number;
   onAcknowledge: () => void;
 }) {
   const [canAck, setCanAck] = useState(false);
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
+    setCanAck(false);
     const t = setTimeout(() => setCanAck(true), 2000);
     return () => {
       document.body.style.overflow = "";
       clearTimeout(t);
     };
-  }, []);
+  }, [goal.id]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
       <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+        {total > 1 && (
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+            {index + 1} of {total}
+          </p>
+        )}
         <h2 className="text-lg font-semibold text-gray-900">Still pending today</h2>
+        <div className="flex items-center gap-3 rounded-xl bg-gray-50 border border-gray-200 p-4">
+          <span className="text-3xl">{goal.emoji}</span>
+          <span className="text-base font-medium text-gray-900">{goal.name}</span>
+        </div>
         <p className="text-sm text-gray-500">
-          You haven't done these yet — take a second to actually look before you dive in.
+          Take a second to actually look before you move on.
         </p>
-        <ul className="space-y-2">
-          {goals.map((g) => (
-            <li key={g.id} className="flex items-center gap-2 text-sm text-gray-700">
-              <span className="text-xl">{g.emoji}</span>
-              <span>{g.name}</span>
-            </li>
-          ))}
-        </ul>
         <button
           onClick={onAcknowledge}
           disabled={!canAck}
@@ -556,19 +562,27 @@ export function HomePage({ userId }: { userId?: string }) {
   const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
   const [moodModalOpen, setMoodModalOpen] = useState(false);
   const [hideDone, setHideDone] = useState(false);
-  const [nudgeAcked, setNudgeAcked] = useState(false);
+  const [ackedNudgeIds, setAckedNudgeIds] = useState<string[]>([]);
 
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
   const nudgeAckKey = `nudge-ack:${userId ?? "alan"}:${getTodayDateStr()}`;
 
   useEffect(() => {
-    setNudgeAcked(localStorage.getItem(nudgeAckKey) === "1");
+    try {
+      const stored = JSON.parse(localStorage.getItem(nudgeAckKey) ?? "[]");
+      setAckedNudgeIds(Array.isArray(stored) ? stored : []);
+    } catch {
+      setAckedNudgeIds([]);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nudgeAckKey]);
 
-  const handleAcknowledgeNudges = () => {
-    localStorage.setItem(nudgeAckKey, "1");
-    setNudgeAcked(true);
+  const handleAcknowledgeNudge = (goalId: string) => {
+    setAckedNudgeIds((prev) => {
+      const next = [...prev, goalId];
+      localStorage.setItem(nudgeAckKey, JSON.stringify(next));
+      return next;
+    });
   };
 
   const sensors = useSensors(
@@ -775,7 +789,9 @@ export function HomePage({ userId }: { userId?: string }) {
 
   const allDone = goals.length > 0 && goals.every((g) => g.isDone);
   const pendingNudges = getPendingNudges(goals);
-  const showNudgeAck = !initialLoad && !nudgeAcked && pendingNudges.length > 0;
+  const unackedNudges = pendingNudges.filter((g) => !ackedNudgeIds.includes(g.id));
+  const currentNudge = unackedNudges[0] ?? null;
+  const showNudgeAck = !initialLoad && currentNudge !== null;
 
   const updatedLabel = new Date(versionData.updatedAt + "T12:00:00").toLocaleDateString("en-US", {
     month: "short", day: "numeric",
@@ -898,8 +914,14 @@ export function HomePage({ userId }: { userId?: string }) {
       )}
 
       {/* Nudge acknowledgement gate */}
-      {showNudgeAck && (
-        <NudgeAckModal goals={pendingNudges} onAcknowledge={handleAcknowledgeNudges} />
+      {showNudgeAck && currentNudge && (
+        <NudgeAckModal
+          key={currentNudge.id}
+          goal={currentNudge}
+          index={pendingNudges.length - unackedNudges.length}
+          total={pendingNudges.length}
+          onAcknowledge={() => handleAcknowledgeNudge(currentNudge.id)}
+        />
       )}
 
     </main>
