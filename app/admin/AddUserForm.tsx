@@ -9,7 +9,7 @@ function randomHex() {
 export default function AddUserForm() {
   const [id, setId] = useState("");
   const [label, setLabel] = useState("");
-  const [result, setResult] = useState<{ checkinTopic: string; nudgeTopic: string } | null>(null);
+  const [result, setResult] = useState<{ checkinTopic: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -21,12 +21,11 @@ export default function AddUserForm() {
 
     const slug = id.toLowerCase().trim().replace(/\s+/g, "-");
     const checkinTopic = `${slug}-checkins-${randomHex()}`;
-    const nudgeTopic = `${slug}-nudge-${randomHex()}`;
 
     const res = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: slug, label: label.trim(), checkinTopic, nudgeTopic }),
+      body: JSON.stringify({ id: slug, label: label.trim(), checkinTopic }),
     });
 
     setLoading(false);
@@ -35,7 +34,7 @@ export default function AddUserForm() {
       return;
     }
 
-    setResult({ checkinTopic, nudgeTopic });
+    setResult({ checkinTopic });
     setId("");
     setLabel("");
   }
@@ -72,10 +71,9 @@ export default function AddUserForm() {
 
       {result && (
         <div className="mt-5 p-4 bg-gray-50 rounded-xl space-y-2">
-          <p className="text-sm font-semibold text-gray-700">User added — share these ntfy links:</p>
+          <p className="text-sm font-semibold text-gray-700">User added — share this ntfy link:</p>
           <TopicRow label="Habit completions" topic={result.checkinTopic} />
-          <TopicRow label="Nudge reminders" topic={result.nudgeTopic} />
-          <p className="text-xs text-gray-400 pt-1">Reload the page to see them in the list above.</p>
+          <p className="text-xs text-gray-400 pt-1">Reload the page to see it in the list above.</p>
         </div>
       )}
     </div>

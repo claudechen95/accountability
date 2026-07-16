@@ -2,19 +2,15 @@ import { getUsers, type UserRecord } from "@/lib/kv";
 import AddUserForm from "./AddUserForm";
 import DeleteUserButton from "./DeleteUserButton";
 
-function resolveTopics(user: UserRecord) {
+function resolveCheckinTopic(user: UserRecord) {
   const upper = user.id.toUpperCase();
-  const checkin =
+  return (
     user.checkinTopic ??
     (user.id === "alan"
       ? process.env.NTFY_TOPIC
       : process.env[`NTFY_${upper}_TOPIC`]) ??
-    null;
-  const nudge =
-    user.nudgeTopic ??
-    process.env[user.id === "alan" ? "NTFY_ALAN_TOPIC" : `NTFY_${upper}_NUDGE_TOPIC`] ??
-    null;
-  return { checkin, nudge };
+    null
+  );
 }
 
 export default async function AdminPage() {
@@ -27,7 +23,7 @@ export default async function AdminPage() {
 
       <div className="flex flex-col gap-3 mb-10">
         {users.map((user) => {
-          const { checkin, nudge } = resolveTopics(user);
+          const checkin = resolveCheckinTopic(user);
           return (
             <div key={user.id} className="bg-white rounded-2xl border border-gray-200 px-5 py-4">
               <div className="flex items-center justify-between mb-3">
@@ -39,7 +35,6 @@ export default async function AdminPage() {
               </div>
               <div className="space-y-1.5">
                 <TopicRow label="Completions" topic={checkin} />
-                <TopicRow label="Nudges" topic={nudge} />
               </div>
             </div>
           );

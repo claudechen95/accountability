@@ -508,112 +508,12 @@ export async function deleteJournalEntry(id: string, userId?: string): Promise<v
   }
 }
 
-// Seed initial note for March 23, 2026 week (W13)
-export async function seedInitialWeeklyNote(): Promise<void> {
-  const weekKey = "2026-W13";
-  const existing = await getWeeklyNote(weekKey);
-  if (existing) return;
-
-  await saveWeeklyNote({
-    week: weekKey,
-    weekLabel: "Week of Mar 24",
-    headline: "Setting the Foundation",
-    notes: "Identified the biggest levers for discipline. Focus on sleep and nutrition as the foundation for everything else.",
-    changes: [
-      "🥗 Added: Macro nutrients tracking (daily)",
-      "😴 Added: 7+ hr sleep tracking (daily) — biggest lever for discipline",
-      "🥤 Adjusted: Protein intake changed from daily to 5x/week to lower burden",
-      "✅ Reaffirmed: Lowering burden while maintaining progress IS progress",
-    ],
-  });
-}
-
-// Seed note for Jun 8, 2026 week (W24)
-export async function seedWeeklyNoteW25(): Promise<void> {
-  const weekKey = "2026-W25";
-  const existing = await getWeeklyNote(weekKey);
-  if (existing) return;
-
-  await saveWeeklyNote({
-    week: weekKey,
-    weekLabel: "Week of Jun 15",
-    headline: "Salad Goes Daily, Notification Fatigue & Emotional Check-in Rethink",
-    notes: "Solid week overall with a few patterns worth fixing. Salad has been consistent for 5 straight weeks so we're upgrading it to a daily goal. The app incorrectly showed a 'missed yesterday' warning for a 6x weekly goal — a bug to fix. Stretch is still getting crammed into the weekend; the plan is to try one weekday session (Friday) to spread it out. Notification fatigue came up: nudging every day trains you to ignore it, so each habit's nudge days should be set intentionally. Emotional check-ins mostly logged as neutral because they happen at calm moments — new approach is to reflect on emotions felt throughout the day, even hours earlier, and log those.",
-    changes: [
-      "🥗 Updated: Salad goal upgraded from 6x/week to daily (5 weeks of strong consistency)",
-      "🐛 Bug: Salad incorrectly shows 'missed yesterday' warning for a 6x/week goal — needs fix",
-      "🐛 Bug: Reflection popup not appearing for Sleep, Stretch, or Emotional Check-in — needs investigation",
-      "🔔 Insight: Nudging every day causes notification fatigue — review and set intentional nudge days per habit",
-      "🧘 Plan: Add one weekday stretch session (Friday) instead of cramming both into the weekend",
-      "💭 Insight: Log emotional check-ins based on emotions felt throughout the day, not just the current moment",
-    ],
-  });
-}
-
-export async function seedWeeklyNoteW24(): Promise<void> {
-  const weekKey = "2026-W24";
-  const existing = await getWeeklyNote(weekKey);
-  if (existing) return;
-
-  await saveWeeklyNote({
-    week: weekKey,
-    weekLabel: "Week of Jun 8",
-    headline: "Habit Bundling, Sunday Crunch & Sleep Reflection Bug",
-    notes: "Alan tends to push tasks to later in the day or to the weekend — this week it caught up with him when something came up Sunday and he lost the time he was counting on. The fix: set an alarm when you decide to do something later, not just a mental note. Also discussed habit bundling from Atomic Habits — pairing a new habit with an existing one (floss when you brush your teeth) lowers the activation energy. Sleep reflection entries are not showing in history; likely a bug to investigate.",
-    changes: [
-      "📖 Insight: Habit bundling — attach new habits to existing ones (e.g. floss right after brushing teeth)",
-      "⏰ Insight: Don't just defer tasks mentally — set an alarm at the moment you decide to do it later",
-      "⚠️ Bug: Reflections for 7+ hr sleep are not displaying in the history grid — needs investigation",
-      "📅 Pattern: Alan waited until Sunday to complete weekly habits, but an unexpected event wiped out that buffer",
-    ],
-  });
-}
-
-// Seed note for Jun 1, 2026 week (W23)
-export async function seedWeeklyNoteW23(): Promise<void> {
-  const weekKey = "2026-W23";
-  const existing = await getWeeklyNote(weekKey);
-  if (existing) return;
-
-  await saveWeeklyNote({
-    week: weekKey,
-    weekLabel: "Week of Jun 1",
-    headline: "Reflection for Any Missed Day, Eye Ointment to 6x & Pinned Check-in",
-    notes: "Three targeted improvements: fixed a bug where the reflection prompt for weekly goals only triggered at the start of a new week (now triggers whenever yesterday was missed, regardless of goal frequency). Bumped the eye ointment target from 5x to 6x per week. Pinned the Emotional Check-in habit to always appear first in the goal list.",
-    changes: [
-      "🐛 Fixed: Reflection prompt now triggers for any goal if you missed yesterday — no longer limited to weekly-goal week boundaries",
-      "💧 Updated: Eye ointment raised from 5x to 6x per week",
-      "📌 Added: Emotional Check-in pinned to always appear first in the habit list",
-    ],
-  });
-}
-
-// Seed note for May 25, 2026 week (W22)
-export async function seedWeeklyNoteW22(): Promise<void> {
-  const weekKey = "2026-W22";
-  const existing = await getWeeklyNote(weekKey);
-  if (existing) return;
-
-  await saveWeeklyNote({
-    week: weekKey,
-    weekLabel: "Week of May 25",
-    headline: "Reflection Display, Retroactive Logging & Emotional Check-in",
-    notes: "Reviewed the history UX — reflections were being saved but the display needed to show them clearly on hover. Planned two new features: retroactive logging for days you forgot to track, and a new Emotional Check-in habit.",
-    changes: [
-      "🐛 Fixed: Missed-day reflection now visible on hover in the history grid (amber cells)",
-      "📅 Added: Retroactive logging — click a missed day in history to mark it as done",
-      "💭 Added: Emotional Check-in habit — pick an emoji (good/bad), write a note, log multiple times/day",
-    ],
-  });
-}
-
 // --- User registry ---
 
 export interface UserRecord {
   id: string;
   label: string;
   checkinTopic?: string; // ntfy topic for habit completions
-  nudgeTopic?: string;   // ntfy topic for nudge reminders
 }
 
 const DEFAULT_USERS: UserRecord[] = [
@@ -632,12 +532,11 @@ export async function getUsers(): Promise<UserRecord[]> {
 export async function addUser(
   id: string,
   label: string,
-  checkinTopic?: string,
-  nudgeTopic?: string
+  checkinTopic?: string
 ): Promise<void> {
   const users = await getUsers();
   if (users.find((u) => u.id === id)) return;
-  users.push({ id, label, checkinTopic, nudgeTopic });
+  users.push({ id, label, checkinTopic });
   await kv.set("users", users);
 }
 
@@ -646,20 +545,13 @@ export async function removeUser(id: string): Promise<void> {
   await kv.set("users", users.filter((u) => u.id !== id));
 }
 
-// Resolve ntfy topic: checks Redis UserRecord first, falls back to env vars for existing users.
-export async function getNtfyTopic(
-  userId: string | undefined,
-  type: "checkin" | "nudge"
-): Promise<string | null> {
+// Resolve ntfy topic for habit-completion notifications: checks Redis UserRecord first,
+// falls back to env vars for existing users whose topics were set before the admin UI.
+export async function getNtfyTopic(userId: string | undefined): Promise<string | null> {
   const users = await getUsers();
   const user = users.find((u) => u.id === (userId ?? "alan"));
-  if (type === "checkin" && user?.checkinTopic) return user.checkinTopic;
-  if (type === "nudge" && user?.nudgeTopic) return user.nudgeTopic;
+  if (user?.checkinTopic) return user.checkinTopic;
 
-  // Fall back to env vars (for users whose topics were set before the admin UI)
   const upper = (userId ?? "").toUpperCase();
-  if (type === "checkin") {
-    return process.env[userId ? `NTFY_${upper}_TOPIC` : "NTFY_TOPIC"] ?? process.env.NTFY_TOPIC ?? null;
-  }
-  return process.env[userId ? `NTFY_${upper}_NUDGE_TOPIC` : "NTFY_ALAN_TOPIC"] ?? null;
+  return process.env[userId ? `NTFY_${upper}_TOPIC` : "NTFY_TOPIC"] ?? process.env.NTFY_TOPIC ?? null;
 }

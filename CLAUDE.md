@@ -4,7 +4,7 @@ Personal habit tracker. Next.js 14 app router, Upstash Redis (KV), deployed on V
 
 ## Stack
 - **Frontend:** `app/page.tsx` (landing page, lists users) + `app/[user]/page.tsx` (per-user tracker)
-- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings, remind
+- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings
 - **Data layer:** `lib/kv.ts` — all Redis reads/writes. Import from here, never call Redis directly elsewhere.
 - **Types:** `lib/types.ts` — `Goal`, `GoalStatus`, `WeeklyNote`, `CheckInRecord`, `MoodEntry`
 - **Timezone:** Everything PST/PDT (`America/Los_Angeles`). Date strings are `YYYY-MM-DD`.
@@ -32,18 +32,18 @@ node scripts/add-user.mjs alice "Alice"
 ```
 Writes directly to Redis. Prints the ntfy subscribe URLs. No deployment needed.
 
-Topics are stored inside the `UserRecord` in Redis (`checkinTopic`, `nudgeTopic`). The checkins and remind routes resolve topics from Redis first, falling back to env vars for Alan/Claude/Rochisha whose topics were set before this system existed.
+The topic is stored inside the `UserRecord` in Redis (`checkinTopic`). The checkins route resolves it from Redis first, falling back to env vars for Alan/Claude/Rochisha whose topics were set before this system existed.
 
 ### Notification env vars per user
 
-Each user needs two env vars:
+There is no push-notification reminder/nudge anymore — pending goals are surfaced in-app via a blocking acknowledgment modal on the home page instead (`getPendingNudges` in `app/components/HabitTracker.tsx`). The only remaining push notification fires when a user checks off a goal, so their accountability partner sees it:
 
-| User | Completed habit | Nudge reminder |
-|------|----------------|----------------|
-| Alan | `NTFY_TOPIC` (legacy) | `NTFY_ALAN_TOPIC` |
-| Claude | `NTFY_CLAUDE_TOPIC` | `NTFY_CLAUDE_NUDGE_TOPIC` |
-| Rochisha | `NTFY_ROCHISHA_TOPIC` | `NTFY_ROCHISHA_NUDGE_TOPIC` |
-| Future | `NTFY_{USER_UPPER}_TOPIC` | `NTFY_{USER_UPPER}_NUDGE_TOPIC` |
+| User | Completed habit |
+|------|----------------|
+| Alan | `NTFY_TOPIC` (legacy) |
+| Claude | `NTFY_CLAUDE_TOPIC` |
+| Rochisha | `NTFY_ROCHISHA_TOPIC` |
+| Future | `NTFY_{USER_UPPER}_TOPIC` |
 
 ## Data model
 Goals are stored as a JSON array at Redis key `goals` (Alan) or `{userId}:goals` (others).
@@ -87,8 +87,43 @@ Add new ones at the bottom of the migration block in `getGoals()`, before `if (c
 Note: migrations run for ALL users. Use `userId` checks inside a migration if it should only apply to one user.
 
 ## Adding a weekly note
-1. Add `export async function seedWeeklyNoteWXX()` to `lib/kv.ts` (copy pattern from `seedWeeklyNoteW23`)
-2. Import and call it in `app/api/notes/route.ts` GET handler alongside the other seeds (inside the `if (!user)` block — Alan-only)
+
+The seed functions in `lib/kv.ts` are **lazy** — they only run the first time the notes API is hit, so a newly deployed seed won't appear until someone loads the app. To write a note immediately, write directly to Redis with curl.
+
+### Immediate write (preferred)
+
+Figure out the ISO week key first. "Last week" relative to the current date: count back to the Monday of that week, then use `YYYY-Www` format (e.g. Jun 22–28 2026 = `2026-W26`, week of Jun 22 = "Week of Jun 22").
+
+```bash
+curl -s -X POST "$UPSTASH_REDIS_REST_URL/set/note:2026-W26" \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$(node -e "
+const note = {
+  week: '2026-W26',
+  weekLabel: 'Week of Jun 22',
+  headline: 'Short headline here',
+  notes: 'Prose summary of the meeting.',
+  changes: [
+    '🔑 Key point one',
+    '🔑 Key point two',
+  ],
+  updatedAt: new Date().toISOString(),
+};
+process.stdout.write(JSON.stringify(note));
+")"
+```
+
+**CRITICAL:** use `process.stdout.write(JSON.stringify(note))` — NOT `console.log(JSON.stringify(JSON.stringify(note)))`. Double-encoding stores a string-of-a-string in Redis; when the app reads it back `note.changes` is `undefined` and the page crashes with `TypeError: Cannot read properties of undefined (reading 'length')`.
+
+Verify the write worked (result should be `dict`, not `str`):
+```bash
+curl -s "$UPSTASH_REDIS_REST_URL/get/note:2026-W26" \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); v=json.loads(d['result']); print(type(v).__name__, list(v.keys()))"
+```
+
+The curl command is all that's needed — no seed functions, no code changes required.
 
 ## Dev
 ```bash

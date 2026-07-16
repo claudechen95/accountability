@@ -30,8 +30,8 @@ cp .env.local.example .env.local
 # Edit .env.local and fill in:
 #   UPSTASH_REDIS_REST_URL
 #   UPSTASH_REDIS_REST_TOKEN
-#   NTFY_ALAN_TOPIC          (push notifications for Alan)
-#   NTFY_ROCHISHA_NUDGE_TOPIC  (push notifications for Rochisha)
+#   NTFY_TOPIC               (push notification when Alan checks in)
+#   NTFY_ROCHISHA_TOPIC      (push notification when Rochisha checks in)
 ```
 
 ### 3. Run locally
@@ -68,7 +68,7 @@ Each user gets a fully isolated namespace in Redis. Data never crosses between u
 ./scripts/add-user.sh alice "Alice"
 ```
 
-This handles everything: generates ntfy topic names, adds them to `.env.local` and Vercel, updates `app/page.tsx`, commits, and deploys. It prints the ntfy subscribe URLs at the end for the new user to add on their phone.
+This handles everything: generates an ntfy topic name, adds it to `.env.local` and Vercel, updates `app/page.tsx`, commits, and deploys. It prints the ntfy subscribe URL at the end for the new user to add on their phone.
 
 No Redis setup needed — same database, automatically isolated under `{userid}:` key prefix.
 
@@ -88,10 +88,10 @@ DELETE /api/goals?user=rochisha
 
 ## Push Notifications
 
-Nudges are sent via [ntfy.sh](https://ntfy.sh). Each user needs their own topic env var:
+When a user checks off a goal, a "checked in" push is sent via [ntfy.sh](https://ntfy.sh) so your accountability partner sees it. Each user needs their own topic env var:
 
-- Alan: `NTFY_ALAN_TOPIC`
-- Rochisha: `NTFY_ROCHISHA_NUDGE_TOPIC`
-- Pattern for new users: `NTFY_{USER_UPPER}_NUDGE_TOPIC`
+- Alan: `NTFY_TOPIC`
+- Rochisha: `NTFY_ROCHISHA_TOPIC`
+- Pattern for new users: `NTFY_{USER_UPPER}_TOPIC`
 
-Trigger a nudge check manually: `GET /api/remind?user=rochisha`
+There are no reminder/nudge push notifications — instead, pending goals are surfaced in-app via a blocking acknowledgment modal on the home page (see `getPendingNudges` in `app/components/HabitTracker.tsx`).

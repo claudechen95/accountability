@@ -6,11 +6,11 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const { id, label, checkinTopic, nudgeTopic } = await req.json();
+  const { id, label, checkinTopic } = await req.json();
   if (!id || !label) {
     return NextResponse.json({ error: "id and label required" }, { status: 400 });
   }
-  await addUser(id, label, checkinTopic, nudgeTopic);
+  await addUser(id, label, checkinTopic);
   return NextResponse.json({ ok: true });
 }
 

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { addCheckIn, undoCheckIn, getGoals, resolveUser, getNtfyTopic } from "@/lib/kv";
 
 async function sendNotification(goalId: string, userId?: string) {
-  const topic = await getNtfyTopic(userId, "checkin");
+  const topic = await getNtfyTopic(userId);
   if (!topic) return;
 
   try {

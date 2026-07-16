@@ -30,7 +30,6 @@ if (!id) {
 
 const hex = () => Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0").slice(0, 6);
 const checkinTopic = `${id}-checkins-${hex()}`;
-const nudgeTopic = `${id}-nudge-${hex()}`;
 
 const stored = await kv.get("users") ?? [];
 if (stored.find((u) => u.id === id)) {
@@ -38,11 +37,10 @@ if (stored.find((u) => u.id === id)) {
   process.exit(0);
 }
 
-stored.push({ id, label, checkinTopic, nudgeTopic });
+stored.push({ id, label, checkinTopic });
 await kv.set("users", stored);
 
 console.log(`\nAdded: ${label} (/${id})\n`);
-console.log("ntfy subscribe links:");
+console.log("ntfy subscribe link:");
 console.log(`  Habit completions : https://ntfy.sh/${checkinTopic}`);
-console.log(`  Nudge reminders   : https://ntfy.sh/${nudgeTopic}`);
 console.log("\nDone — no deployment needed. User appears on the landing page immediately.");

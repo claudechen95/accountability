@@ -6,11 +6,6 @@ import {
   deleteWeeklyNote,
   getCurrentWeekKey,
   getWeekLabel,
-  seedInitialWeeklyNote,
-  seedWeeklyNoteW22,
-  seedWeeklyNoteW23,
-  seedWeeklyNoteW24,
-  seedWeeklyNoteW25,
   resolveUser,
 } from "@/lib/kv";
 
@@ -26,14 +21,6 @@ export async function GET(req: Request) {
       return NextResponse.json(note || { week, weekLabel: getWeekLabel(week), headline: "", notes: "", changes: [] });
     }
 
-    // Seed Alan's changelog notes for the default (no-user) namespace
-    if (!user) {
-      await seedInitialWeeklyNote();
-      await seedWeeklyNoteW22();
-      await seedWeeklyNoteW23();
-      await seedWeeklyNoteW24();
-      await seedWeeklyNoteW25();
-    }
     const notes = await getAllWeeklyNotes(52, user);
     return NextResponse.json(notes);
   } catch (err) {
