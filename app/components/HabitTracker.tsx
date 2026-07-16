@@ -30,6 +30,21 @@ function getTodayPST(): Date {
   return new Date(pstStr);
 }
 
+function getTodayDateStr(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: PST }).format(new Date());
+}
+
+function getPendingNudges(goals: GoalStatus[]): GoalStatus[] {
+  const todayDow = getTodayPST().getDay();
+  return goals.filter((g) => {
+    if (g.frequency === "daily") return g.completedThisPeriod < g.targetCount;
+    if (g.nudgeDays && g.nudgeDays.includes(todayDow)) {
+      return g.completedThisPeriod < g.targetCount && g.todayCount === 0;
+    }
+    return false;
+  });
+}
+
 function isHandled(g: GoalStatus): boolean {
   return g.isDone || (g.frequency === "weekly" && g.targetCount > 1 && g.todayCount >= 1);
 }
@@ -290,6 +305,51 @@ function ReflectionModal({
 }
 
 
+function NudgeAckModal({
+  goals,
+  onAcknowledge,
+}: {
+  goals: GoalStatus[];
+  onAcknowledge: () => void;
+}) {
+  const [canAck, setCanAck] = useState(false);
+
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    const t = setTimeout(() => setCanAck(true), 2000);
+    return () => {
+      document.body.style.overflow = "";
+      clearTimeout(t);
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+        <h2 className="text-lg font-semibold text-gray-900">Still pending today</h2>
+        <p className="text-sm text-gray-500">
+          You haven't done these yet — take a second to actually look before you dive in.
+        </p>
+        <ul className="space-y-2">
+          {goals.map((g) => (
+            <li key={g.id} className="flex items-center gap-2 text-sm text-gray-700">
+              <span className="text-xl">{g.emoji}</span>
+              <span>{g.name}</span>
+            </li>
+          ))}
+        </ul>
+        <button
+          onClick={onAcknowledge}
+          disabled={!canAck}
+          className="w-full bg-gray-900 text-white rounded-xl py-2 text-sm font-medium hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {canAck ? "I acknowledge" : "Reading…"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function GoalCard({
   goal,
   onCheckIn,
@@ -496,8 +556,20 @@ export function HomePage({ userId }: { userId?: string }) {
   const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
   const [moodModalOpen, setMoodModalOpen] = useState(false);
   const [hideDone, setHideDone] = useState(false);
+  const [nudgeAcked, setNudgeAcked] = useState(false);
 
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
+  const nudgeAckKey = `nudge-ack:${userId ?? "alan"}:${getTodayDateStr()}`;
+
+  useEffect(() => {
+    setNudgeAcked(localStorage.getItem(nudgeAckKey) === "1");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nudgeAckKey]);
+
+  const handleAcknowledgeNudges = () => {
+    localStorage.setItem(nudgeAckKey, "1");
+    setNudgeAcked(true);
+  };
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -702,6 +774,8 @@ export function HomePage({ userId }: { userId?: string }) {
   };
 
   const allDone = goals.length > 0 && goals.every((g) => g.isDone);
+  const pendingNudges = getPendingNudges(goals);
+  const showNudgeAck = !initialLoad && !nudgeAcked && pendingNudges.length > 0;
 
   const updatedLabel = new Date(versionData.updatedAt + "T12:00:00").toLocaleDateString("en-US", {
     month: "short", day: "numeric",
@@ -821,6 +895,11 @@ export function HomePage({ userId }: { userId?: string }) {
           onSubmit={handleMoodSubmit}
           onClose={() => setMoodModalOpen(false)}
         />
+      )}
+
+      {/* Nudge acknowledgement gate */}
+      {showNudgeAck && (
+        <NudgeAckModal goals={pendingNudges} onAcknowledge={handleAcknowledgeNudges} />
       )}
 
     </main>
