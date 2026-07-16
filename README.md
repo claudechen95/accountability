@@ -2,6 +2,8 @@
 
 A personal daily/weekly habit check-in app. Multi-user — each person gets their own isolated dashboard at `/{username}`.
 
+Unlike a solo habit tracker, this app is built around having an accountability **partner**: each of you tracks your own goals, but you coach each other and hold a weekly meeting to review progress, discuss what's working, and reset for the week ahead. The Weekly Notes and Reflections tabs exist to capture what comes out of those check-ins.
+
 ## Screenshots
 
 | Home | Mood Journal | Weekly Notes |
