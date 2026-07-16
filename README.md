@@ -2,6 +2,16 @@
 
 A personal daily/weekly habit check-in app. Multi-user — each person gets their own isolated dashboard at `/{username}`.
 
+## Screenshots
+
+| Home | Mood Journal | Weekly Notes |
+|------|--------------|--------------|
+| ![Home — daily/weekly goal tracker](docs/screenshots/home.png) | ![Mood Journal — logged emotions over time](docs/screenshots/mood.png) | ![Weekly Notes — recap of each week](docs/screenshots/notes.png) |
+
+| History | Reflections |
+|---------|--------------|
+| ![History — per-goal streaks and completion heatmap](docs/screenshots/history.png) | ![Reflections — freeform notes tied to missed periods](docs/screenshots/reflect.png) |
+
 ## Local Development
 
 ### 1. Get a free Redis database (Upstash)
