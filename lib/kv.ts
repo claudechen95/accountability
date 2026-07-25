@@ -106,8 +106,6 @@ export async function endVacationNow(userId?: string): Promise<void> {
 }
 
 // --- Escalating text nudges ---
-// A reply to any nudge text snoozes the whole user (not per-goal — free text can't be reliably
-// attributed to one habit) for the rest of the PST day. Expires naturally at midnight.
 function secondsUntilMidnightPST(): number {
   const now = new Date();
   const pstNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
@@ -206,6 +204,14 @@ export async function getCompletedThisPeriod(goal: Goal, userId?: string): Promi
   return getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(getTodayDate()), userId);
 }
 
+// Stable per-user 1..N ids used by text nudges ("reply 2") — reassigned compactly by current
+// array order whenever a goal is added or removed, so numbers never have gaps.
+export function renumberGoals(goals: Goal[]): void {
+  goals.forEach((g, i) => {
+    g.nudgeNumber = i + 1;
+  });
+}
+
 // --- Goals ---
 export async function getGoals(userId?: string): Promise<Goal[]> {
   let goals = await kv.get<Goal[]>(k(userId, "goals"));
@@ -257,6 +263,14 @@ export async function getGoals(userId?: string): Promise<Goal[]> {
     }
 
     if (changed) await kv.set(k(userId, "goals"), goals);
+  }
+
+  // Backfill nudgeNumber for all users (not just Alan) — runs whenever any goal is missing it,
+  // e.g. after the migrations above added a goal, or for pre-existing goals from before this
+  // field existed.
+  if (goals.some((g) => g.nudgeNumber == null)) {
+    renumberGoals(goals);
+    await kv.set(k(userId, "goals"), goals);
   }
 
   return goals;

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGoals, saveGoals, getGoalStatuses, resolveUser } from "@/lib/kv";
+import { getGoals, saveGoals, getGoalStatuses, renumberGoals, resolveUser } from "@/lib/kv";
 
 export async function GET(req: Request) {
   try {
@@ -24,6 +24,7 @@ export async function POST(req: Request) {
       goals[existing] = { ...goals[existing], ...body };
     } else {
       goals.push(body);
+      renumberGoals(goals); // new goal — assign it the next nudge number
     }
     await saveGoals(goals, user);
     return NextResponse.json({ ok: true });
@@ -58,7 +59,9 @@ export async function DELETE(req: Request) {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { id } = await req.json();
     const goals = await getGoals(user);
-    await saveGoals(goals.filter((g) => g.id !== id), user);
+    const remaining = goals.filter((g) => g.id !== id);
+    renumberGoals(remaining); // keep nudge numbers compact after a removal
+    await saveGoals(remaining, user);
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error(err);

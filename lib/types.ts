@@ -7,6 +7,7 @@ export interface Goal {
   nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only
   nudgeTime?: string;  // "HH:MM" PST 24hr, default "21:00"
   nudgeEnabled?: boolean; // daily goals only; opt out of the daily pending-nudge modal, default true
+  nudgeNumber?: number; // stable per-user 1..N id shown/used in text nudges, e.g. "reply 2"; renumbered compactly whenever a goal is added or removed
   type?: "mood";
   order?: number;
   streakOffset?: number; // legacy streak days preserved across frequency changes

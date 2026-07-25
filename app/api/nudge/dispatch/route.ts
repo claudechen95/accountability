@@ -50,10 +50,10 @@ export async function POST(req: Request) {
       const pending = pendingAll.filter((_, i) => !snoozedFlags[i]);
       if (pending.length === 0) continue;
 
-      const list = pending.map((g) => `${g.emoji} ${g.name}`).join(", ");
+      const list = pending.map((g) => `${g.nudgeNumber}. ${g.emoji} ${g.name}`).join("\n");
       await sendText(
         user.phone,
-        `⏰ Still pending: ${list}. Reply with a habit's name to snooze just that one for today, or "stop" to snooze all.`
+        `⏰ Still pending:\n${list}\nReply with a number or habit name to snooze just that one for today, or "stop" to snooze all.`
       );
       results.push({ userId: user.id, nudged: true });
     } catch (err) {

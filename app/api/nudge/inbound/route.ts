@@ -24,6 +24,18 @@ function extractSecret(req: Request, body: Record<string, unknown>): string | nu
   );
 }
 
+function words(text: string): Set<string> {
+  return new Set(text.toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean));
+}
+
+// Matches on shared whole words rather than "does the full name appear verbatim" — lets a
+// short reply like "video" hit a long habit name like "Video Journal", and avoids a short
+// habit name like "Gym" false-matching inside an unrelated word like "gymnastics".
+function matchesHabit(reply: string, habitName: string): boolean {
+  const replyWords = words(reply);
+  return Array.from(words(habitName)).some((w) => replyWords.has(w));
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "invalid body" }, { status: 400 });
@@ -47,16 +59,23 @@ export async function POST(req: Request) {
 
       // Sendblue has no reply-to/thread field, so there's no reliable way to know which
       // outbound message a reply is "about" — match the reply text against pending habit
-      // names instead. Snoozing must be an intentional act: naming a habit snoozes just
-      // that one; only an explicit "stop"/"all"-type reply snoozes everything. A reply that
-      // matches neither (a stray "ok", "on it", etc.) snoozes nothing — the nudge keeps
-      // firing, since silence shouldn't be this easy to win.
-      const reply = body.content.trim().toLowerCase();
-      const matched = pending.filter((g) => reply.includes(g.name.toLowerCase()));
+      // names, or a number against each goal's stable nudgeNumber (assigned/renumbered in
+      // lib/kv.ts whenever a habit is added or removed, so "2" always means the same habit
+      // rather than a position in whichever list happened to go out last). Snoozing must be
+      // an intentional act: a number or a habit's name snoozes just that one; only an
+      // explicit "stop"/"all"-type reply snoozes everything. A reply matching none of that
+      // (a stray "ok", "on it", etc.) snoozes nothing — the nudge keeps firing, since silence
+      // shouldn't be this easy to win.
+      const reply: string = body.content.trim().toLowerCase();
+      const numbers = (reply.match(/\d+/g) ?? []).map(Number);
+      const numberMatches = pending.filter((g) => g.nudgeNumber != null && numbers.includes(g.nudgeNumber)).map((g) => g.id);
+      const nameMatches = pending.filter((g) => matchesHabit(reply, g.name)).map((g) => g.id);
       const isExplicitStopAll = /^(stop|all|stop all|snooze all)$/.test(reply);
-      const toSnooze = matched.length > 0 ? matched : isExplicitStopAll ? pending : [];
 
-      await Promise.all(toSnooze.map((g) => setNudgeSnoozed(uid, g.id, today)));
+      const explicit = new Set([...numberMatches, ...nameMatches]);
+      const toSnoozeIds = explicit.size > 0 ? Array.from(explicit) : isExplicitStopAll ? pending.map((g) => g.id) : [];
+
+      await Promise.all(toSnoozeIds.map((id) => setNudgeSnoozed(uid, id, today)));
     }
   }
 
