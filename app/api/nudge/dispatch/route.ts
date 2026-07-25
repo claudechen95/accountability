@@ -48,12 +48,16 @@ export async function POST(req: Request) {
       const pendingAll = getPendingNudges(goals, todayDow, nowHHMM);
       const snoozedFlags = await Promise.all(pendingAll.map((g) => getNudgeSnoozed(uid, g.id, today)));
       const pending = pendingAll.filter((_, i) => !snoozedFlags[i]);
+      const snoozed = pendingAll.filter((_, i) => snoozedFlags[i]);
       if (pending.length === 0) continue;
 
       const list = pending.map((g) => `${g.nudgeNumber}. ${g.emoji} ${g.name}`).join("\n");
+      const snoozedLine = snoozed.length > 0
+        ? `\nSnoozed today: ${snoozed.map((g) => `${g.emoji} ${g.name}`).join(", ")}`
+        : "";
       await sendText(
         user.phone,
-        `⏰ Still pending:\n${list}\nReply with a number or habit name to snooze just that one for today, or "stop" to snooze all.`
+        `⏰ Still pending:\n${list}\nReply with a number or habit name to snooze just that one for today, or "stop" to snooze all.${snoozedLine}`
       );
       results.push({ userId: user.id, nudged: true });
     } catch (err) {
