@@ -142,6 +142,14 @@ export function getTodayDate(): string {
   }).format(new Date()); // YYYY-MM-DD in PST/PDT
 }
 
+// "HH:MM" 24hr in PST/PDT, comparable lexicographically against Goal.nudgeTime.
+export function getPstTimeHHMM(): string {
+  const now = new Date();
+  const hour = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false }).format(now);
+  const minute = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", minute: "numeric" }).format(now);
+  return `${String(Number(hour) % 24).padStart(2, "0")}:${String(Number(minute)).padStart(2, "0")}`;
+}
+
 export function getWeekKey(date?: string): string {
   const d = date ? new Date(date + "T12:00:00") : new Date();
   const pstDate = new Intl.DateTimeFormat("en-CA", {

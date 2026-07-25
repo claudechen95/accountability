@@ -22,7 +22,6 @@ import { CSS } from "@dnd-kit/utilities";
 import versionData from "@/version.json";
 import type { Goal, GoalStatus } from "@/lib/types";
 import type { VacationWindow } from "@/lib/kv";
-import { getPendingNudges } from "@/lib/nudges";
 import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
 
 const PST = "America/Los_Angeles";
@@ -316,57 +315,6 @@ function ReflectionModal({
 }
 
 
-function NudgeAckModal({
-  goal,
-  index,
-  total,
-  onAcknowledge,
-}: {
-  goal: GoalStatus;
-  index: number;
-  total: number;
-  onAcknowledge: () => void;
-}) {
-  const [canAck, setCanAck] = useState(false);
-
-  useEffect(() => {
-    document.body.style.overflow = "hidden";
-    setCanAck(false);
-    const t = setTimeout(() => setCanAck(true), 2000);
-    return () => {
-      document.body.style.overflow = "";
-      clearTimeout(t);
-    };
-  }, [goal.id]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
-        {total > 1 && (
-          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">
-            {index + 1} of {total}
-          </p>
-        )}
-        <h2 className="text-lg font-semibold text-gray-900">Still pending today</h2>
-        <div className="flex items-center gap-3 rounded-xl bg-gray-50 border border-gray-200 p-4">
-          <span className="text-3xl">{goal.emoji}</span>
-          <span className="text-base font-medium text-gray-900">{goal.name}</span>
-        </div>
-        <p className="text-sm text-gray-500">
-          Take a second to actually look before you move on.
-        </p>
-        <button
-          onClick={onAcknowledge}
-          disabled={!canAck}
-          className="w-full bg-gray-900 text-white rounded-xl py-2 text-sm font-medium hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {canAck ? "I acknowledge" : "Reading…"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function GoalCard({
   goal,
   onCheckIn,
@@ -582,7 +530,6 @@ export function HomePage({ userId }: { userId?: string }) {
   const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
   const [moodModalOpen, setMoodModalOpen] = useState(false);
   const [hideDone, setHideDone] = useState(false);
-  const [ackedNudgeIds, setAckedNudgeIds] = useState<string[]>([]);
   const [vacation, setVacation] = useState<VacationWindow | null>(null);
   const [vacationFormOpen, setVacationFormOpen] = useState(false);
   const [vacationEndDate, setVacationEndDate] = useState(() => addDaysToDateStr(getTodayDateStr(), 7));
@@ -591,25 +538,6 @@ export function HomePage({ userId }: { userId?: string }) {
   const isGoalPaused = (goalId: string) => !!vacation?.goalIds.includes(goalId);
 
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
-  const nudgeAckKey = `nudge-ack:${userId ?? "alan"}:${getTodayDateStr()}`;
-
-  useEffect(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(nudgeAckKey) ?? "[]");
-      setAckedNudgeIds(Array.isArray(stored) ? stored : []);
-    } catch {
-      setAckedNudgeIds([]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nudgeAckKey]);
-
-  const handleAcknowledgeNudge = (goalId: string) => {
-    setAckedNudgeIds((prev) => {
-      const next = [...prev, goalId];
-      localStorage.setItem(nudgeAckKey, JSON.stringify(next));
-      return next;
-    });
-  };
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -875,10 +803,6 @@ export function HomePage({ userId }: { userId?: string }) {
   };
 
   const allDone = goals.length > 0 && goals.every((g) => g.isDone);
-  const pendingNudges = getPendingNudges(goals, getTodayPST().getDay()).filter((g) => !isGoalPaused(g.id));
-  const unackedNudges = pendingNudges.filter((g) => !ackedNudgeIds.includes(g.id));
-  const currentNudge = unackedNudges[0] ?? null;
-  const showNudgeAck = !initialLoad && currentNudge !== null;
 
   const updatedLabel = new Date(versionData.updatedAt + "T12:00:00").toLocaleDateString("en-US", {
     month: "short", day: "numeric",
@@ -1073,17 +997,6 @@ export function HomePage({ userId }: { userId?: string }) {
         <MoodModal
           onSubmit={handleMoodSubmit}
           onClose={() => setMoodModalOpen(false)}
-        />
-      )}
-
-      {/* Nudge acknowledgement gate */}
-      {showNudgeAck && currentNudge && (
-        <NudgeAckModal
-          key={currentNudge.id}
-          goal={currentNudge}
-          index={pendingNudges.length - unackedNudges.length}
-          total={pendingNudges.length}
-          onAcknowledge={() => handleAcknowledgeNudge(currentNudge.id)}
         />
       )}
 

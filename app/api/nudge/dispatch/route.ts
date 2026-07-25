@@ -6,6 +6,7 @@ import {
   getNudgeSnoozed,
   claimNudgeSlot,
   getTodayDate,
+  getPstTimeHHMM,
   resolveUser,
 } from "@/lib/kv";
 import { getPendingNudges } from "@/lib/nudges";
@@ -21,6 +22,7 @@ export async function POST(req: Request) {
 
   const today = getTodayDate();
   const todayDow = new Date(today + "T12:00:00").getDay();
+  const nowHHMM = getPstTimeHHMM();
   const pstHour = Number(
     new Intl.DateTimeFormat("en-US", {
       timeZone: "America/Los_Angeles",
@@ -43,7 +45,7 @@ export async function POST(req: Request) {
       const vacation = await getActiveVacation(uid);
       const pausedIds = new Set(vacation?.goalIds ?? []);
       const goals = (await getGoalStatuses(uid)).filter((g) => !pausedIds.has(g.id));
-      const pendingAll = getPendingNudges(goals, todayDow);
+      const pendingAll = getPendingNudges(goals, todayDow, nowHHMM);
       const snoozedFlags = await Promise.all(pendingAll.map((g) => getNudgeSnoozed(uid, g.id, today)));
       const pending = pendingAll.filter((_, i) => !snoozedFlags[i]);
       if (pending.length === 0) continue;

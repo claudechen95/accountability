@@ -5,6 +5,7 @@ import {
   getGoalStatuses,
   getActiveVacation,
   getTodayDate,
+  getPstTimeHHMM,
   resolveUser,
 } from "@/lib/kv";
 import { getPendingNudges } from "@/lib/nudges";
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
       const vacation = await getActiveVacation(uid);
       const pausedIds = new Set(vacation?.goalIds ?? []);
       const goals = (await getGoalStatuses(uid)).filter((g) => !pausedIds.has(g.id));
-      const pending = getPendingNudges(goals, todayDow);
+      const pending = getPendingNudges(goals, todayDow, getPstTimeHHMM());
 
       // Sendblue has no reply-to/thread field, so there's no reliable way to know which
       // outbound message a reply is "about" — match the reply text against pending habit

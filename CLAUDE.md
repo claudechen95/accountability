@@ -36,7 +36,7 @@ The topic is stored inside the `UserRecord` in Redis (`checkinTopic`). The check
 
 ### Notification env vars per user
 
-Pending goals are surfaced two ways: in-app via a blocking acknowledgment modal on the home page (`getPendingNudges` in `lib/nudges.ts`, shared with the server-side dispatch below), and via escalating text messages for users with a phone number configured. The habit-completion push notification fires when a user checks off a goal, so their accountability partner sees it:
+There is no in-app nudge modal anymore — pending goals are surfaced entirely via escalating text messages (below) for users with a phone number configured. The habit-completion push notification still fires when a user checks off a goal, so their accountability partner sees it:
 
 | User | Completed habit |
 |------|----------------|
@@ -47,7 +47,7 @@ Pending goals are surfaced two ways: in-app via a blocking acknowledgment modal 
 
 ### Escalating text nudges (Sendblue + cron-job.org)
 
-Any user with a `phone` set (via `/admin`, or `PATCH /api/users`) gets a text via [Sendblue](https://docs.sendblue.com) every hour, 8am–9pm PST, listing whichever habits are still pending — until they either complete the check-in or text back a reply. `lib/nudges.ts`'s `getPendingNudges` is the single source of truth for "is this goal pending", shared between the in-app modal and the server dispatch, so the two never disagree. Vacation-paused goals (`getActiveVacation`) are excluded.
+Any user with a `phone` set (via `/admin`, or `PATCH /api/users`) gets a text via [Sendblue](https://docs.sendblue.com) every hour, 8am–9pm PST, listing whichever habits are still pending — until they either complete the check-in or text back a reply. `lib/nudges.ts`'s `getPendingNudges` is the single source of truth for "is this goal pending". Vacation-paused goals (`getActiveVacation`) are excluded. A habit's `nudgeTime` (set per-goal in the habit form) gates when it *enters* the rotation — e.g. set to 6pm, the earliest possible nudge for that habit is the 6pm tick, then hourly after; it defaults to `"21:00"` if unset.
 
 - **`app/api/nudge/dispatch/route.ts`** — the hourly tick. Requires header `x-nudge-secret` matching `NUDGE_DISPATCH_SECRET` (rejects with 401 otherwise — there is no unauthenticated path). Scheduled externally via [cron-job.org](https://cron-job.org)'s API (Vercel's Hobby-plan Cron can't run more than once/day, so it can't be used here) — the schedule itself encodes the 8am–9pm PST window via `schedule.hours`/`schedule.timezone`, and sends `x-nudge-secret` as a custom request header.
 - **`app/api/nudge/inbound/route.ts`** — Sendblue's inbound-webhook target, registered via `POST https://api.sendblue.com/api/account/webhooks` with a chosen `secret`. Requires that secret to be echoed back (checked against `sb-webhook-secret`/`sb-signing-secret` headers or a `secret` body field — Sendblue's docs don't pin down the exact one, so all are checked; unverified requests always 401). Sendblue has no reply-to/thread field, so a reply is matched against the sender's *currently pending* habit names (`nudge:snoozed:{goalId}:{date}`, per-goal) — naming a habit snoozes just that one for the rest of the PST day; an explicit "stop"/"all"/"stop all"/"snooze all" reply snoozes everything pending. Anything else (a stray "ok", "on it", etc.) snoozes nothing — silence has to be intentional, not the default outcome of any reply.
