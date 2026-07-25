@@ -51,7 +51,7 @@ export async function POST(req: Request) {
       const list = pending.map((g) => `${g.emoji} ${g.name}`).join(", ");
       await sendText(
         user.phone,
-        `⏰ Still pending: ${list}. Reply with a habit's name to snooze just that one for today (or anything else to snooze all).`
+        `⏰ Still pending: ${list}. Reply with a habit's name to snooze just that one for today, or "stop" to snooze all.`
       );
       results.push({ userId: user.id, nudged: true });
     } catch (err) {
