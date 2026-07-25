@@ -21,6 +21,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import versionData from "@/version.json";
 import type { Goal, GoalStatus } from "@/lib/types";
+import type { VacationWindow } from "@/lib/kv";
 import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
 
 const PST = "America/Los_Angeles";
@@ -34,10 +35,18 @@ function getTodayDateStr(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: PST }).format(new Date());
 }
 
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days, 12));
+  return [dt.getUTCFullYear(), String(dt.getUTCMonth() + 1).padStart(2, "0"), String(dt.getUTCDate()).padStart(2, "0")].join("-");
+}
+
 function getPendingNudges(goals: GoalStatus[]): GoalStatus[] {
   const todayDow = getTodayPST().getDay();
   return goals.filter((g) => {
-    if (g.frequency === "daily") return g.completedThisPeriod < g.targetCount;
+    if (g.frequency === "daily") {
+      return g.nudgeEnabled !== false && g.completedThisPeriod < g.targetCount;
+    }
     if (g.nudgeDays && g.nudgeDays.includes(todayDow)) {
       return g.completedThisPeriod < g.targetCount && g.todayCount === 0;
     }
@@ -89,11 +98,12 @@ function HabitForm({
   const [targetCount, setTargetCount] = useState(initial?.targetCount ?? 1);
   const [nudgeDays, setNudgeDays] = useState<number[]>(initial?.nudgeDays ?? []);
   const [nudgeTime, setNudgeTime] = useState(initial?.nudgeTime ?? "21:00");
+  const [nudgeEnabled, setNudgeEnabled] = useState(initial?.nudgeEnabled ?? true);
 
   const toggleNudgeDay = (day: number) =>
     setNudgeDays((prev) => prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]);
 
-  const nudgeActive = frequency === "daily" || (frequency === "weekly" && nudgeDays.length > 0);
+  const nudgeActive = frequency === "daily" ? nudgeEnabled : nudgeDays.length > 0;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,6 +115,7 @@ function HabitForm({
       frequency,
       targetCount,
       nudgeDays: frequency === "weekly" ? nudgeDays : undefined,
+      nudgeEnabled: frequency === "daily" ? nudgeEnabled : undefined,
       nudgeTime: nudgeActive ? nudgeTime : undefined,
     });
   };
@@ -176,6 +187,18 @@ function HabitForm({
           </button>
         </div>
       </div>
+
+      {frequency === "daily" && (
+        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={nudgeEnabled}
+            onChange={(e) => setNudgeEnabled(e.target.checked)}
+            className="w-4 h-4 rounded border-gray-300 text-gray-900 focus:ring-gray-300"
+          />
+          Nudge me daily
+        </label>
+      )}
 
       {frequency === "weekly" && (
         <div>
@@ -363,6 +386,7 @@ function GoalCard({
   onEdit,
   onDelete,
   loading,
+  paused,
   dragHandleProps,
 }: {
   goal: GoalStatus;
@@ -371,6 +395,7 @@ function GoalCard({
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   loading: boolean;
+  paused?: boolean;
   dragHandleProps?: React.HTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> };
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -413,7 +438,14 @@ function GoalCard({
           <p className="text-sm text-gray-500 mb-3">
             {goal.targetCount}x {goal.frequency} &middot; {formatPeriod(goal.frequency)}
           </p>
-          <StreakBadge streak={goal.streak} />
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <StreakBadge streak={goal.streak} />
+            {paused && (
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-sky-600 bg-sky-50 border border-sky-200 rounded-full px-2 py-0.5">
+                🌴 paused
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex-shrink-0">
@@ -563,6 +595,12 @@ export function HomePage({ userId }: { userId?: string }) {
   const [moodModalOpen, setMoodModalOpen] = useState(false);
   const [hideDone, setHideDone] = useState(false);
   const [ackedNudgeIds, setAckedNudgeIds] = useState<string[]>([]);
+  const [vacation, setVacation] = useState<VacationWindow | null>(null);
+  const [vacationFormOpen, setVacationFormOpen] = useState(false);
+  const [vacationEndDate, setVacationEndDate] = useState(() => addDaysToDateStr(getTodayDateStr(), 7));
+  const [vacationGoalIds, setVacationGoalIds] = useState<string[]>([]);
+
+  const isGoalPaused = (goalId: string) => !!vacation?.goalIds.includes(goalId);
 
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
   const nudgeAckKey = `nudge-ack:${userId ?? "alan"}:${getTodayDateStr()}`;
@@ -604,9 +642,21 @@ export function HomePage({ userId }: { userId?: string }) {
     }
   }, [q]);
 
+  const fetchVacation = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/vacation${q}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setVacation(data.active);
+    } catch {
+      // non-critical — leave prior state
+    }
+  }, [q]);
+
   useEffect(() => {
     fetchGoals();
-  }, [fetchGoals]);
+    fetchVacation();
+  }, [fetchGoals, fetchVacation]);
 
   // Refresh at midnight PST
   useEffect(() => {
@@ -625,12 +675,13 @@ export function HomePage({ userId }: { userId?: string }) {
     function scheduleRefresh() {
       timeout = setTimeout(() => {
         fetchGoals();
+        fetchVacation();
         scheduleRefresh();
       }, msUntilMidnightPST());
     }
     scheduleRefresh();
     return () => clearTimeout(timeout);
-  }, [fetchGoals]);
+  }, [fetchGoals, fetchVacation]);
 
   const doCheckIn = async (goalId: string) => {
     setLoading(true);
@@ -651,7 +702,7 @@ export function HomePage({ userId }: { userId?: string }) {
 
   const handleCheckIn = (goalId: string) => {
     const goal = goals.find((g) => g.id === goalId);
-    if (goal?.lastPeriodMissed && goal.todayCount === 0) {
+    if (!isGoalPaused(goalId) && goal?.lastPeriodMissed && goal.todayCount === 0) {
       setReflectionTarget(goal);
       return;
     }
@@ -763,6 +814,54 @@ export function HomePage({ userId }: { userId?: string }) {
     }
   };
 
+  const toggleVacationForm = () => {
+    if (!vacationFormOpen) {
+      setVacationGoalIds(goals.map((g) => g.id));
+      setVacationEndDate(addDaysToDateStr(getTodayDateStr(), 7));
+    }
+    setVacationFormOpen((v) => !v);
+  };
+
+  const toggleVacationGoal = (goalId: string) => {
+    setVacationGoalIds((prev) =>
+      prev.includes(goalId) ? prev.filter((id) => id !== goalId) : [...prev, goalId]
+    );
+  };
+
+  const handleStartVacation = async () => {
+    if (vacationGoalIds.length === 0 || !vacationEndDate) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/vacation${q}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endDate: vacationEndDate, goalIds: vacationGoalIds }),
+      });
+      if (!res.ok) throw new Error("Failed to start vacation");
+      const data = await res.json();
+      setVacation(data.active);
+      setVacationFormOpen(false);
+    } catch {
+      setError("Couldn't start vacation. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEndVacation = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/vacation${q}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to end vacation");
+      setVacation(null);
+      await fetchGoals(); // streak numbers may shift back under normal rules
+    } catch {
+      setError("Couldn't end vacation. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const sortedGoals = [...goals].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -788,7 +887,7 @@ export function HomePage({ userId }: { userId?: string }) {
   };
 
   const allDone = goals.length > 0 && goals.every((g) => g.isDone);
-  const pendingNudges = getPendingNudges(goals);
+  const pendingNudges = getPendingNudges(goals).filter((g) => !isGoalPaused(g.id));
   const unackedNudges = pendingNudges.filter((g) => !ackedNudgeIds.includes(g.id));
   const currentNudge = unackedNudges[0] ?? null;
   const showNudgeAck = !initialLoad && currentNudge !== null;
@@ -814,8 +913,83 @@ export function HomePage({ userId }: { userId?: string }) {
         <div className="text-right mt-1">
           <p className="text-xs font-semibold text-gray-400">v{versionData.version}</p>
           <p className="text-[11px] text-gray-300">updated {updatedLabel}</p>
+          {!vacation && (
+            <button
+              onClick={toggleVacationForm}
+              className="text-[11px] text-gray-400 hover:text-gray-600 underline mt-1"
+            >
+              🌴 vacation mode
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Vacation start form */}
+      {vacationFormOpen && !vacation && (
+        <div className="mb-6 rounded-2xl border border-gray-200 bg-white shadow-sm p-4 space-y-3">
+          <p className="text-sm text-gray-700">Pause nudges and protect streaks for selected habits while you're away.</p>
+          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+            {sortedGoals.map((g) => (
+              <label key={g.id} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={vacationGoalIds.includes(g.id)}
+                  onChange={() => toggleVacationGoal(g.id)}
+                  className="w-4 h-4 rounded border-gray-300 text-gray-900 focus:ring-gray-300"
+                />
+                <span>{g.emoji} {g.name}</span>
+              </label>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+            <span className="text-sm text-gray-500">Until:</span>
+            <input
+              type="date"
+              min={getTodayDateStr()}
+              value={vacationEndDate}
+              onChange={(e) => setVacationEndDate(e.target.value)}
+              className="border border-gray-200 rounded-xl px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-300"
+            />
+            <button
+              onClick={handleStartVacation}
+              disabled={loading || vacationGoalIds.length === 0 || !vacationEndDate}
+              className="ml-auto bg-gray-900 text-white rounded-xl px-4 py-1.5 text-sm font-medium hover:bg-gray-700 disabled:opacity-50 transition-colors"
+            >
+              Start
+            </button>
+            <button
+              onClick={() => setVacationFormOpen(false)}
+              className="text-xs text-gray-400 hover:text-gray-600 underline"
+            >
+              cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Vacation active banner */}
+      {vacation && (
+        <div className="mb-6 rounded-2xl bg-sky-50 border border-sky-200 p-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-sky-900">
+              🌴 {vacation.goalIds.length} habit{vacation.goalIds.length === 1 ? "" : "s"} paused until{" "}
+              {new Date(vacation.endDate + "T12:00:00").toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+              })}
+            </p>
+            <p className="text-xs text-sky-600 mt-0.5">
+              {goals.filter((g) => vacation.goalIds.includes(g.id)).map((g) => g.emoji).join(" ") || "Nudges paused. Streaks are safe."}
+            </p>
+          </div>
+          <button
+            onClick={handleEndVacation}
+            className="text-xs text-sky-600 hover:text-sky-800 underline flex-shrink-0"
+          >
+            end early
+          </button>
+        </div>
+      )}
 
       {/* All done banner */}
       {allDone && (
@@ -872,6 +1046,7 @@ export function HomePage({ userId }: { userId?: string }) {
                     onEdit={setEditingId}
                     onDelete={handleDeleteHabit}
                     loading={loading}
+                    paused={isGoalPaused(goal.id)}
                   />
                 )
               )}

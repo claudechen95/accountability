@@ -54,6 +54,57 @@ export async function setRemindHour(hour: number, userId?: string): Promise<void
   await kv.set(k(userId, "settings:remindHour"), hour);
 }
 
+// --- Vacation mode ---
+// Windows are kept forever (not just the active one) so streak walks that later pass back
+// over an old vacation window still know to treat those days as neutral, not missed.
+export interface VacationWindow {
+  startDate: string; // YYYY-MM-DD PST, inclusive
+  endDate: string; // YYYY-MM-DD PST, inclusive
+  goalIds: string[]; // only these habits are paused by this window
+}
+
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days, 12));
+  return [dt.getUTCFullYear(), String(dt.getUTCMonth() + 1).padStart(2, "0"), String(dt.getUTCDate()).padStart(2, "0")].join("-");
+}
+
+function isVacationDay(dateStr: string, windows: VacationWindow[], goalId: string): boolean {
+  return windows.some((w) => w.goalIds.includes(goalId) && w.startDate <= dateStr && dateStr <= w.endDate);
+}
+
+async function getVacationWindows(userId?: string): Promise<VacationWindow[]> {
+  const stored = await kv.get<VacationWindow[]>(k(userId, "settings:vacation"));
+  return stored ?? [];
+}
+
+export async function getActiveVacation(userId?: string): Promise<VacationWindow | null> {
+  const today = getTodayDate();
+  const windows = await getVacationWindows(userId);
+  return windows.find((w) => w.startDate <= today && today <= w.endDate) ?? null;
+}
+
+export async function startVacation(endDate: string, goalIds: string[], userId?: string): Promise<VacationWindow> {
+  const startDate = getTodayDate();
+  const windows = await getVacationWindows(userId);
+  // Starting fresh always resets from today; keep only windows that already ended.
+  const past = windows.filter((w) => w.endDate < startDate);
+  const window: VacationWindow = { startDate, endDate, goalIds };
+  past.push(window);
+  await kv.set(k(userId, "settings:vacation"), past);
+  return window;
+}
+
+export async function endVacationNow(userId?: string): Promise<void> {
+  const today = getTodayDate();
+  const windows = await getVacationWindows(userId);
+  const idx = windows.findIndex((w) => w.startDate <= today && today <= w.endDate);
+  if (idx === -1) return;
+  // Days already spent on vacation stay tagged vacation; today onward behaves normally again.
+  windows[idx] = { ...windows[idx], endDate: addDaysToDateStr(today, -1) };
+  await kv.set(k(userId, "settings:vacation"), windows.filter((w) => w.startDate <= w.endDate));
+}
+
 // --- Period helpers ---
 export function getTodayDate(): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -231,7 +282,7 @@ export async function getHistory(
   goal: Goal,
   periods: number,
   userId?: string
-): Promise<{ period: string; count: number; done: boolean }[]> {
+): Promise<{ period: string; count: number; done: boolean; vacation: boolean }[]> {
   const todayPST = getTodayDate();
   const [ty, tm, td] = todayPST.split("-").map(Number);
   const labels: string[] = [];
@@ -245,11 +296,14 @@ export async function getHistory(
   }
 
   const keys = labels.map((label) => k(userId, `checkin:${goal.id}:${label}`));
-  const counts = await kv.mget<number[]>(...keys);
+  const [counts, vacationWindows] = await Promise.all([
+    kv.mget<number[]>(...keys),
+    getVacationWindows(userId),
+  ]);
   return labels.map((period, i) => {
     const count = counts[i] ?? 0;
     const done = goal.frequency === "daily" ? count >= goal.targetCount : count >= 1;
-    return { period, count, done };
+    return { period, count, done, vacation: isVacationDay(period, vacationWindows, goal.id) };
   });
 }
 
@@ -264,6 +318,7 @@ export async function getStreak(goal: Goal, userId?: string): Promise<number> {
 async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
   let streak = 0;
   const today = new Date();
+  const vacationWindows = await getVacationWindows(userId);
 
   for (let i = 0; i < 365; i++) {
     const d = new Date(today);
@@ -272,6 +327,8 @@ async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
     const count = await kv.get<number>(k(userId, `checkin:${goal.id}:${dateKey}`));
     if ((count ?? 0) >= goal.targetCount) {
       streak++;
+    } else if (isVacationDay(dateKey, vacationWindows, goal.id)) {
+      continue; // neutral — doesn't break, doesn't count
     } else {
       // Don't break on today if not yet checked in
       if (i > 0) break;
@@ -287,6 +344,7 @@ async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
 async function getWeeklyStreak(goal: Goal, userId?: string): Promise<number> {
   let streak = 0;
   const todayStr = getTodayDate();
+  const vacationWindows = await getVacationWindows(userId);
 
   for (let i = 0; i < 52; i++) {
     const [y, m, d] = todayStr.split("-").map(Number);
@@ -296,9 +354,12 @@ async function getWeeklyStreak(goal: Goal, userId?: string): Promise<number> {
       String(ref.getUTCMonth() + 1).padStart(2, "0"),
       String(ref.getUTCDate()).padStart(2, "0"),
     ].join("-");
-    const daysCompleted = await getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(refStr), userId);
+    const weekDates = getWeekDatesForDate(refStr);
+    const daysCompleted = await getWeeklyDaysCompleted(goal.id, weekDates, userId);
     if (daysCompleted >= goal.targetCount) {
       streak++;
+    } else if (weekDates.some((wd) => isVacationDay(wd, vacationWindows, goal.id))) {
+      continue;
     } else {
       if (i > 0) break;
     }
@@ -329,7 +390,11 @@ export async function getLastPeriodMissed(goal: Goal, userId?: string): Promise<
   const hasHistory = (await kv.llen(k(userId, `history:${goal.id}`))) > 0;
   if (!hasHistory) return false;
 
-  const count = await getCheckInsForPeriod(goal.id, getLastPeriodDateStr(), userId);
+  const yesterday = getLastPeriodDateStr();
+  const vacationWindows = await getVacationWindows(userId);
+  if (isVacationDay(yesterday, vacationWindows, goal.id)) return false;
+
+  const count = await getCheckInsForPeriod(goal.id, yesterday, userId);
   return count === 0;
 }
 

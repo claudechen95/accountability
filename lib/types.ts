@@ -4,8 +4,9 @@ export interface Goal {
   emoji: string;
   frequency: "daily" | "weekly";
   targetCount: number; // how many times per period
-  nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only (daily goals always nudge)
+  nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only
   nudgeTime?: string;  // "HH:MM" PST 24hr, default "21:00"
+  nudgeEnabled?: boolean; // daily goals only; opt out of the daily pending-nudge modal, default true
   type?: "mood";
   order?: number;
   streakOffset?: number; // legacy streak days preserved across frequency changes

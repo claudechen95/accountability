@@ -13,6 +13,7 @@ interface HistoryEntry {
   period: string;
   count: number;
   done: boolean;
+  vacation: boolean;
 }
 
 interface GoalHistory {
@@ -168,19 +169,21 @@ function DailyGrid({
                 }
                 const isFuture = entry.period > today;
                 const isToday = entry.period === today;
-                const isMissed = !isFuture && !isToday && !entry.done;
+                const isMissed = !isFuture && !isToday && !entry.done && !entry.vacation;
                 const reflection = isMissed ? reflections[entry.period] : undefined;
                 const color = isFuture
                   ? "bg-gray-100"
                   : entry.done
                   ? "bg-green-500"
+                  : entry.vacation
+                  ? "bg-sky-200"
                   : reflection
                   ? "bg-amber-300"
                   : "bg-gray-200";
                 const label = new Date(entry.period + "T12:00:00").toLocaleDateString("en-US", {
                   weekday: "short", month: "short", day: "numeric",
                 });
-                const status = isFuture || frequency === "weekly" ? "" : entry.done ? ` · ✓` : isToday ? "" : ` · ✗ missed`;
+                const status = isFuture || frequency === "weekly" ? "" : entry.done ? ` · ✓` : entry.vacation ? ` · 🌴 vacation` : isToday ? "" : ` · ✗ missed`;
                 const retroHint = isMissed && onBackfill ? "\ntap to backfill" : "";
                 const tooltipText = reflection
                   ? `${label}${status}\n"${reflection.length > 80 ? reflection.slice(0, 80) + "…" : reflection}"${retroHint}`
@@ -204,6 +207,8 @@ function DailyGrid({
         <span>missed</span>
         <div className="w-3 h-3 rounded-sm bg-amber-300" />
         <span>reflected</span>
+        <div className="w-3 h-3 rounded-sm bg-sky-200" />
+        <span>vacation</span>
         <div className="w-3 h-3 rounded-sm bg-green-500" />
         <span>done</span>
       </div>
