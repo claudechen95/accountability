@@ -9,6 +9,7 @@ import {
   resolveUser,
 } from "@/lib/kv";
 import { getPendingNudges } from "@/lib/nudges";
+import { sendText } from "@/lib/sendblue";
 
 // Sendblue's inbound-message webhook target, registered via POST /api/account/webhooks with
 // our own chosen secret (see CLAUDE.md). Sendblue's docs confirm the secret is echoed back in
@@ -75,7 +76,18 @@ export async function POST(req: Request) {
       const explicit = new Set([...numberMatches, ...nameMatches]);
       const toSnoozeIds = explicit.size > 0 ? Array.from(explicit) : isExplicitStopAll ? pending.map((g) => g.id) : [];
 
-      await Promise.all(toSnoozeIds.map((id) => setNudgeSnoozed(uid, id, today)));
+      if (toSnoozeIds.length > 0) {
+        await Promise.all(toSnoozeIds.map((id) => setNudgeSnoozed(uid, id, today)));
+
+        // Confirm back so the reply doesn't just vanish into silence — the user has no other
+        // way to know it was understood (or understood correctly).
+        const snoozedNames = pending.filter((g) => toSnoozeIds.includes(g.id)).map((g) => `${g.emoji} ${g.name}`);
+        try {
+          await sendText(body.number, `✅ Snoozed for today: ${snoozedNames.join(", ")}`);
+        } catch (err) {
+          console.error(`Nudge snooze confirmation failed for ${user.id}:`, err);
+        }
+      }
     }
   }
 
