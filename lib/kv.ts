@@ -116,12 +116,14 @@ function secondsUntilMidnightPST(): number {
   return Math.ceil((86400000 - msSinceMidnight) / 1000);
 }
 
-export async function getNudgeSnoozed(userId: string | undefined, date: string): Promise<boolean> {
-  return !!(await kv.get(k(userId, `nudge:snoozed:${date}`)));
+// Snoozed per-goal (not per-user) — a reply naming a specific habit only silences that habit;
+// see app/api/nudge/inbound/route.ts for how a reply is matched to the goal(s) it's about.
+export async function getNudgeSnoozed(userId: string | undefined, goalId: string, date: string): Promise<boolean> {
+  return !!(await kv.get(k(userId, `nudge:snoozed:${goalId}:${date}`)));
 }
 
-export async function setNudgeSnoozed(userId: string | undefined, date: string): Promise<void> {
-  await kv.set(k(userId, `nudge:snoozed:${date}`), 1, { ex: secondsUntilMidnightPST() });
+export async function setNudgeSnoozed(userId: string | undefined, goalId: string, date: string): Promise<void> {
+  await kv.set(k(userId, `nudge:snoozed:${goalId}:${date}`), 1, { ex: secondsUntilMidnightPST() });
 }
 
 // Atomically claims this user's send slot for the given PST hour. Returns true if this call

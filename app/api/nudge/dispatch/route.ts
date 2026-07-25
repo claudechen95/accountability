@@ -36,8 +36,6 @@ export async function POST(req: Request) {
     const uid = resolveUser(user.id);
 
     try {
-      if (await getNudgeSnoozed(uid, today)) continue;
-
       // Claim this hour's slot BEFORE sending so an overlapping/retried invocation for the
       // same hour can't pass the same check twice (see lib/kv.ts claimNudgeSlot).
       if (!(await claimNudgeSlot(uid, today, pstHour))) continue;
@@ -45,11 +43,16 @@ export async function POST(req: Request) {
       const vacation = await getActiveVacation(uid);
       const pausedIds = new Set(vacation?.goalIds ?? []);
       const goals = (await getGoalStatuses(uid)).filter((g) => !pausedIds.has(g.id));
-      const pending = getPendingNudges(goals, todayDow);
+      const pendingAll = getPendingNudges(goals, todayDow);
+      const snoozedFlags = await Promise.all(pendingAll.map((g) => getNudgeSnoozed(uid, g.id, today)));
+      const pending = pendingAll.filter((_, i) => !snoozedFlags[i]);
       if (pending.length === 0) continue;
 
       const list = pending.map((g) => `${g.emoji} ${g.name}`).join(", ");
-      await sendText(user.phone, `⏰ Still pending: ${list}. Reply to snooze for today.`);
+      await sendText(
+        user.phone,
+        `⏰ Still pending: ${list}. Reply with a habit's name to snooze just that one for today (or anything else to snooze all).`
+      );
       results.push({ userId: user.id, nudged: true });
     } catch (err) {
       console.error(`Nudge dispatch failed for ${user.id}:`, err);
