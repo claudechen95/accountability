@@ -76,10 +76,12 @@ interface Goal {
   emoji: string;
   frequency: "daily" | "weekly";
   targetCount: number;
-  type?: "mood";       // only on emotional-checkin
-  order?: number;      // drag-to-reorder position
-  nudgeDays?: number[]; // 0=Sun…6=Sat
-  nudgeTime?: string;  // "HH:MM" PST
+  type?: "mood";        // only on emotional-checkin
+  order?: number;       // drag-to-reorder position
+  nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only
+  nudgeTime?: string;   // "HH:MM" PST; gates when a habit enters the text-nudge rotation
+  nudgeEnabled?: boolean; // daily goals only; opt out of nudging, default true
+  nudgeNumber?: number; // stable per-user 1..N id used in nudge texts ("reply 2")
 }
 ```
 
@@ -89,6 +91,7 @@ interface Goal {
 - **Emotional Check-in** (`id: "emotional-checkin"`, `type: "mood"`): Opens mood emoji picker. "Log another" instead of "undo" when done. No position pin — user controls via drag.
 - **Backfill:** Click a missed (gray/amber) cell in the history grid to log it for that date. `POST /api/checkins` accepts `{ goalId, date }`.
 - **Weekly streak for weekly goals:** Counted in weeks, not days. `getWeeklyStreak()` walks back 52 weeks.
+- **Vacation mode:** Per-user, per-habit pause (`VacationWindow { startDate, endDate, goalIds }` in `lib/kv.ts`, key `settings:vacation`). Can be scheduled for a future `startDate`, not just started immediately — `getActiveVacation` only returns a window once `startDate <= today`, so a scheduled-but-not-started window pauses nothing yet; `getUpcomingVacation` surfaces it for display before then. `endVacationNow` trims an active window to end yesterday (preserving vacation-day history) or, for a not-yet-started window, deletes it outright since nothing happened yet to preserve. `startVacation` always replaces any window that hasn't fully ended (active or upcoming) — only one vacation window is tracked "in flight" at a time.
 
 ## Migrations (run on every `getGoals()` call)
 Add new ones at the bottom of the migration block in `getGoals()`, before `if (changed) await kv.set("goals", goals)`:

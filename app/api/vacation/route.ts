@@ -1,16 +1,30 @@
 import { NextResponse } from "next/server";
-import { getActiveVacation, startVacation, endVacationNow, resolveUser, getGoals, getTodayDate } from "@/lib/kv";
+import {
+  getActiveVacation,
+  getUpcomingVacation,
+  startVacation,
+  endVacationNow,
+  resolveUser,
+  getGoals,
+  getTodayDate,
+} from "@/lib/kv";
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function GET(req: Request) {
   const user = resolveUser(new URL(req.url).searchParams.get("user"));
-  const active = await getActiveVacation(user);
-  return NextResponse.json({ active });
+  const [active, upcoming] = await Promise.all([getActiveVacation(user), getUpcomingVacation(user)]);
+  return NextResponse.json({ active, upcoming });
 }
 
 export async function POST(req: Request) {
   const user = resolveUser(new URL(req.url).searchParams.get("user"));
-  const { endDate, goalIds } = await req.json();
-  if (typeof endDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < getTodayDate()) {
+  const { startDate, endDate, goalIds } = await req.json();
+  const today = getTodayDate();
+  if (typeof startDate !== "string" || !DATE_RE.test(startDate) || startDate < today) {
+    return NextResponse.json({ error: "Invalid start date" }, { status: 400 });
+  }
+  if (typeof endDate !== "string" || !DATE_RE.test(endDate) || endDate < startDate) {
     return NextResponse.json({ error: "Invalid end date" }, { status: 400 });
   }
   if (!Array.isArray(goalIds) || goalIds.length === 0) {
@@ -21,8 +35,9 @@ export async function POST(req: Request) {
   if (validIds.length === 0) {
     return NextResponse.json({ error: "No valid habits selected" }, { status: 400 });
   }
-  const active = await startVacation(endDate, validIds, user);
-  return NextResponse.json({ active });
+  const window = await startVacation(startDate, endDate, validIds, user);
+  const [active, upcoming] = await Promise.all([getActiveVacation(user), getUpcomingVacation(user)]);
+  return NextResponse.json({ active, upcoming, window });
 }
 
 export async function DELETE(req: Request) {

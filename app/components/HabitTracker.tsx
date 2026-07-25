@@ -531,7 +531,9 @@ export function HomePage({ userId }: { userId?: string }) {
   const [moodModalOpen, setMoodModalOpen] = useState(false);
   const [hideDone, setHideDone] = useState(false);
   const [vacation, setVacation] = useState<VacationWindow | null>(null);
+  const [upcomingVacation, setUpcomingVacation] = useState<VacationWindow | null>(null);
   const [vacationFormOpen, setVacationFormOpen] = useState(false);
+  const [vacationStartDate, setVacationStartDate] = useState(() => getTodayDateStr());
   const [vacationEndDate, setVacationEndDate] = useState(() => addDaysToDateStr(getTodayDateStr(), 7));
   const [vacationGoalIds, setVacationGoalIds] = useState<string[]>([]);
 
@@ -564,6 +566,7 @@ export function HomePage({ userId }: { userId?: string }) {
       if (!res.ok) return;
       const data = await res.json();
       setVacation(data.active);
+      setUpcomingVacation(data.upcoming);
     } catch {
       // non-critical — leave prior state
     }
@@ -733,6 +736,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const toggleVacationForm = () => {
     if (!vacationFormOpen) {
       setVacationGoalIds(goals.map((g) => g.id));
+      setVacationStartDate(getTodayDateStr());
       setVacationEndDate(addDaysToDateStr(getTodayDateStr(), 7));
     }
     setVacationFormOpen((v) => !v);
@@ -745,17 +749,18 @@ export function HomePage({ userId }: { userId?: string }) {
   };
 
   const handleStartVacation = async () => {
-    if (vacationGoalIds.length === 0 || !vacationEndDate) return;
+    if (vacationGoalIds.length === 0 || !vacationStartDate || !vacationEndDate) return;
     setLoading(true);
     try {
       const res = await fetch(`/api/vacation${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ endDate: vacationEndDate, goalIds: vacationGoalIds }),
+        body: JSON.stringify({ startDate: vacationStartDate, endDate: vacationEndDate, goalIds: vacationGoalIds }),
       });
       if (!res.ok) throw new Error("Failed to start vacation");
       const data = await res.json();
       setVacation(data.active);
+      setUpcomingVacation(data.upcoming);
       setVacationFormOpen(false);
     } catch {
       setError("Couldn't start vacation. Try again.");
@@ -770,6 +775,7 @@ export function HomePage({ userId }: { userId?: string }) {
       const res = await fetch(`/api/vacation${q}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to end vacation");
       setVacation(null);
+      setUpcomingVacation(null);
       await fetchGoals(); // streak numbers may shift back under normal rules
     } catch {
       setError("Couldn't end vacation. Try again.");
@@ -825,7 +831,7 @@ export function HomePage({ userId }: { userId?: string }) {
         <div className="text-right mt-1">
           <p className="text-xs font-semibold text-gray-400">v{versionData.version}</p>
           <p className="text-[11px] text-gray-300">updated {updatedLabel}</p>
-          {!vacation && (
+          {!vacation && !upcomingVacation && (
             <button
               onClick={toggleVacationForm}
               className="text-[11px] text-gray-400 hover:text-gray-600 underline mt-1"
@@ -837,7 +843,7 @@ export function HomePage({ userId }: { userId?: string }) {
       </div>
 
       {/* Vacation start form */}
-      {vacationFormOpen && !vacation && (
+      {vacationFormOpen && !vacation && !upcomingVacation && (
         <div className="mb-6 rounded-2xl border border-gray-200 bg-white shadow-sm p-4 space-y-3">
           <p className="text-sm text-gray-700">Pause nudges and protect streaks for selected habits while you're away.</p>
           <div className="space-y-1.5 max-h-48 overflow-y-auto">
@@ -854,20 +860,34 @@ export function HomePage({ userId }: { userId?: string }) {
             ))}
           </div>
           <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-            <span className="text-sm text-gray-500">Until:</span>
+            <span className="text-sm text-gray-500">From:</span>
             <input
               type="date"
               min={getTodayDateStr()}
+              value={vacationStartDate}
+              onChange={(e) => {
+                const next = e.target.value;
+                setVacationStartDate(next);
+                if (vacationEndDate < next) setVacationEndDate(next);
+              }}
+              className="border border-gray-200 rounded-xl px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-300"
+            />
+            <span className="text-sm text-gray-500">Until:</span>
+            <input
+              type="date"
+              min={vacationStartDate}
               value={vacationEndDate}
               onChange={(e) => setVacationEndDate(e.target.value)}
               className="border border-gray-200 rounded-xl px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-300"
             />
+          </div>
+          <div className="flex items-center gap-2">
             <button
               onClick={handleStartVacation}
-              disabled={loading || vacationGoalIds.length === 0 || !vacationEndDate}
+              disabled={loading || vacationGoalIds.length === 0 || !vacationStartDate || !vacationEndDate}
               className="ml-auto bg-gray-900 text-white rounded-xl px-4 py-1.5 text-sm font-medium hover:bg-gray-700 disabled:opacity-50 transition-colors"
             >
-              Start
+              {vacationStartDate > getTodayDateStr() ? "Schedule" : "Start"}
             </button>
             <button
               onClick={() => setVacationFormOpen(false)}
@@ -899,6 +919,29 @@ export function HomePage({ userId }: { userId?: string }) {
             className="text-xs text-sky-600 hover:text-sky-800 underline flex-shrink-0"
           >
             end early
+          </button>
+        </div>
+      )}
+
+      {/* Vacation scheduled (not started yet) banner */}
+      {!vacation && upcomingVacation && (
+        <div className="mb-6 rounded-2xl bg-sky-50 border border-sky-200 p-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-sky-900">
+              🌴 {upcomingVacation.goalIds.length} habit{upcomingVacation.goalIds.length === 1 ? "" : "s"} scheduled for vacation{" "}
+              {new Date(upcomingVacation.startDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+              {" – "}
+              {new Date(upcomingVacation.endDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+            </p>
+            <p className="text-xs text-sky-600 mt-0.5">
+              {goals.filter((g) => upcomingVacation.goalIds.includes(g.id)).map((g) => g.emoji).join(" ")}
+            </p>
+          </div>
+          <button
+            onClick={handleEndVacation}
+            className="text-xs text-sky-600 hover:text-sky-800 underline flex-shrink-0"
+          >
+            cancel
           </button>
         </div>
       )}

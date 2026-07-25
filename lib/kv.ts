@@ -84,25 +84,42 @@ export async function getActiveVacation(userId?: string): Promise<VacationWindow
   return windows.find((w) => w.startDate <= today && today <= w.endDate) ?? null;
 }
 
-export async function startVacation(endDate: string, goalIds: string[], userId?: string): Promise<VacationWindow> {
-  const startDate = getTodayDate();
+// A window scheduled to start later — not yet in effect, so it doesn't pause anything yet.
+export async function getUpcomingVacation(userId?: string): Promise<VacationWindow | null> {
+  const today = getTodayDate();
   const windows = await getVacationWindows(userId);
-  // Starting fresh always resets from today; keep only windows that already ended.
-  const past = windows.filter((w) => w.endDate < startDate);
+  return windows.filter((w) => w.startDate > today).sort((a, b) => a.startDate.localeCompare(b.startDate))[0] ?? null;
+}
+
+export async function startVacation(startDate: string, endDate: string, goalIds: string[], userId?: string): Promise<VacationWindow> {
+  const today = getTodayDate();
+  const windows = await getVacationWindows(userId);
+  // Scheduling fresh always replaces any window that hasn't fully ended yet (active or
+  // upcoming) — keep only windows that already ended.
+  const past = windows.filter((w) => w.endDate < today);
   const window: VacationWindow = { startDate, endDate, goalIds };
   past.push(window);
   await kv.set(k(userId, "settings:vacation"), past);
   return window;
 }
 
+// Ends an active vacation early (trims to yesterday, preserving vacation-day history) or
+// cancels a not-yet-started scheduled one outright (nothing to preserve — it never began).
 export async function endVacationNow(userId?: string): Promise<void> {
   const today = getTodayDate();
   const windows = await getVacationWindows(userId);
   const idx = windows.findIndex((w) => w.startDate <= today && today <= w.endDate);
-  if (idx === -1) return;
-  // Days already spent on vacation stay tagged vacation; today onward behaves normally again.
-  windows[idx] = { ...windows[idx], endDate: addDaysToDateStr(today, -1) };
-  await kv.set(k(userId, "settings:vacation"), windows.filter((w) => w.startDate <= w.endDate));
+  if (idx !== -1) {
+    // Days already spent on vacation stay tagged vacation; today onward behaves normally again.
+    windows[idx] = { ...windows[idx], endDate: addDaysToDateStr(today, -1) };
+    await kv.set(k(userId, "settings:vacation"), windows.filter((w) => w.startDate <= w.endDate));
+    return;
+  }
+  const upcomingIdx = windows.findIndex((w) => w.startDate > today);
+  if (upcomingIdx !== -1) {
+    windows.splice(upcomingIdx, 1);
+    await kv.set(k(userId, "settings:vacation"), windows);
+  }
 }
 
 // --- Escalating text nudges ---
