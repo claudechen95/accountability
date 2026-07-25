@@ -22,6 +22,7 @@ import { CSS } from "@dnd-kit/utilities";
 import versionData from "@/version.json";
 import type { Goal, GoalStatus } from "@/lib/types";
 import type { VacationWindow } from "@/lib/kv";
+import { getPendingNudges } from "@/lib/nudges";
 import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
 
 const PST = "America/Los_Angeles";
@@ -39,19 +40,6 @@ function addDaysToDateStr(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d + days, 12));
   return [dt.getUTCFullYear(), String(dt.getUTCMonth() + 1).padStart(2, "0"), String(dt.getUTCDate()).padStart(2, "0")].join("-");
-}
-
-function getPendingNudges(goals: GoalStatus[]): GoalStatus[] {
-  const todayDow = getTodayPST().getDay();
-  return goals.filter((g) => {
-    if (g.frequency === "daily") {
-      return g.nudgeEnabled !== false && g.completedThisPeriod < g.targetCount;
-    }
-    if (g.nudgeDays && g.nudgeDays.includes(todayDow)) {
-      return g.completedThisPeriod < g.targetCount && g.todayCount === 0;
-    }
-    return false;
-  });
 }
 
 function isHandled(g: GoalStatus): boolean {
@@ -887,7 +875,7 @@ export function HomePage({ userId }: { userId?: string }) {
   };
 
   const allDone = goals.length > 0 && goals.every((g) => g.isDone);
-  const pendingNudges = getPendingNudges(goals).filter((g) => !isGoalPaused(g.id));
+  const pendingNudges = getPendingNudges(goals, getTodayPST().getDay()).filter((g) => !isGoalPaused(g.id));
   const unackedNudges = pendingNudges.filter((g) => !ackedNudgeIds.includes(g.id));
   const currentNudge = unackedNudges[0] ?? null;
   const showNudgeAck = !initialLoad && currentNudge !== null;

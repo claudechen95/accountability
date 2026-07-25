@@ -9,6 +9,7 @@ function randomHex() {
 export default function AddUserForm() {
   const [id, setId] = useState("");
   const [label, setLabel] = useState("");
+  const [phone, setPhone] = useState("");
   const [result, setResult] = useState<{ checkinTopic: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -25,7 +26,7 @@ export default function AddUserForm() {
     const res = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: slug, label: label.trim(), checkinTopic }),
+      body: JSON.stringify({ id: slug, label: label.trim(), checkinTopic, phone: phone.trim() || undefined }),
     });
 
     setLoading(false);
@@ -37,6 +38,7 @@ export default function AddUserForm() {
     setResult({ checkinTopic });
     setId("");
     setLabel("");
+    setPhone("");
   }
 
   return (
@@ -59,6 +61,12 @@ export default function AddUserForm() {
             className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-gray-400"
           />
         </div>
+        <input
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          placeholder="Phone for nudges (optional, e.g. +15551234567)"
+          className="border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-gray-400"
+        />
         <button
           type="submit"
           disabled={loading}

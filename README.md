@@ -94,4 +94,4 @@ When a user checks off a goal, a "checked in" push is sent via [ntfy.sh](https:/
 - Rochisha: `NTFY_ROCHISHA_TOPIC`
 - Pattern for new users: `NTFY_{USER_UPPER}_TOPIC`
 
-There are no reminder/nudge push notifications — instead, pending goals are surfaced in-app via a blocking acknowledgment modal on the home page (see `getPendingNudges` in `app/components/HabitTracker.tsx`).
+Pending goals are also surfaced in-app via a blocking acknowledgment modal on the home page (see `getPendingNudges` in `lib/nudges.ts`), and, for users with a phone number set in `/admin`, via hourly escalating text messages until they check in or reply — see the "Escalating text nudges" section in `CLAUDE.md`.

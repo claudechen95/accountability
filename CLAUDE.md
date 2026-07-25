@@ -4,7 +4,7 @@ Personal habit tracker. Next.js 14 app router, Upstash Redis (KV), deployed on V
 
 ## Stack
 - **Frontend:** `app/page.tsx` (landing page, lists users) + `app/[user]/page.tsx` (per-user tracker)
-- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings
+- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings, vacation, users, nudge/dispatch, nudge/inbound
 - **Data layer:** `lib/kv.ts` — all Redis reads/writes. Import from here, never call Redis directly elsewhere.
 - **Types:** `lib/types.ts` — `Goal`, `GoalStatus`, `WeeklyNote`, `CheckInRecord`, `MoodEntry`
 - **Timezone:** Everything PST/PDT (`America/Los_Angeles`). Date strings are `YYYY-MM-DD`.
@@ -36,7 +36,7 @@ The topic is stored inside the `UserRecord` in Redis (`checkinTopic`). The check
 
 ### Notification env vars per user
 
-There is no push-notification reminder/nudge anymore — pending goals are surfaced in-app via a blocking acknowledgment modal on the home page instead (`getPendingNudges` in `app/components/HabitTracker.tsx`). The only remaining push notification fires when a user checks off a goal, so their accountability partner sees it:
+Pending goals are surfaced two ways: in-app via a blocking acknowledgment modal on the home page (`getPendingNudges` in `lib/nudges.ts`, shared with the server-side dispatch below), and via escalating text messages for users with a phone number configured. The habit-completion push notification fires when a user checks off a goal, so their accountability partner sees it:
 
 | User | Completed habit |
 |------|----------------|
@@ -44,6 +44,17 @@ There is no push-notification reminder/nudge anymore — pending goals are surfa
 | Claude | `NTFY_CLAUDE_TOPIC` |
 | Rochisha | `NTFY_ROCHISHA_TOPIC` |
 | Future | `NTFY_{USER_UPPER}_TOPIC` |
+
+### Escalating text nudges (Sendblue + cron-job.org)
+
+Any user with a `phone` set (via `/admin`, or `PATCH /api/users`) gets a text via [Sendblue](https://docs.sendblue.com) every hour, 8am–9pm PST, listing whichever habits are still pending — until they either complete the check-in or text back a reply. `lib/nudges.ts`'s `getPendingNudges` is the single source of truth for "is this goal pending", shared between the in-app modal and the server dispatch, so the two never disagree. Vacation-paused goals (`getActiveVacation`) are excluded.
+
+- **`app/api/nudge/dispatch/route.ts`** — the hourly tick. Requires header `x-nudge-secret` matching `NUDGE_DISPATCH_SECRET` (rejects with 401 otherwise — there is no unauthenticated path). Scheduled externally via [cron-job.org](https://cron-job.org)'s API (Vercel's Hobby-plan Cron can't run more than once/day, so it can't be used here) — the schedule itself encodes the 8am–9pm PST window via `schedule.hours`/`schedule.timezone`, and sends `x-nudge-secret` as a custom request header.
+- **`app/api/nudge/inbound/route.ts`** — Sendblue's inbound-webhook target, registered via `POST https://api.sendblue.com/api/account/webhooks` with a chosen `secret`. Requires that secret to be echoed back (checked against `sb-webhook-secret`/`sb-signing-secret` headers or a `secret` body field — Sendblue's docs don't pin down the exact one, so all are checked; unverified requests always 401). A reply snoozes *all* of that user's nudges for the rest of the PST day (`nudge:snoozed:{userId}:{date}`) — not per-habit, since free text can't be reliably attributed to one goal.
+- `lib/kv.ts`'s `claimNudgeSlot(userId, date, hour)` atomically claims (`SET NX EX`) a per-hour send slot *before* texting, so overlapping/retried dispatch calls for the same hour can never double-send.
+- `lib/sendblue.ts`'s `sendText` is the only place that calls the Sendblue send API.
+
+Env vars: `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (chosen by us, used both when registering the webhook and to verify inbound requests), `NUDGE_DISPATCH_SECRET` (chosen by us, given to cron-job.org as a custom header).
 
 ## Data model
 Goals are stored as a JSON array at Redis key `goals` (Alan) or `{userId}:goals` (others).

@@ -1,31 +1,10 @@
 import { NextResponse } from "next/server";
-import { getGoals, saveGoals, getCompletedThisPeriod, getStreak, getCheckInsForPeriod, getTodayDate, getLastPeriodMissed, resolveUser } from "@/lib/kv";
-import type { GoalStatus } from "@/lib/types";
+import { getGoals, saveGoals, getGoalStatuses, resolveUser } from "@/lib/kv";
 
 export async function GET(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
-    const goals = await getGoals(user);
-
-    const statuses: GoalStatus[] = await Promise.all(
-      goals.map(async (goal) => {
-        const [completed, streak, todayCount, lastPeriodMissed] = await Promise.all([
-          getCompletedThisPeriod(goal, user),
-          getStreak(goal, user),
-          getCheckInsForPeriod(goal.id, getTodayDate(), user),
-          getLastPeriodMissed(goal, user),
-        ]);
-        return {
-          ...goal,
-          completedThisPeriod: completed,
-          isDone: completed >= goal.targetCount,
-          streak,
-          todayCount,
-          lastPeriodMissed,
-        };
-      })
-    );
-
+    const statuses = await getGoalStatuses(user);
     return NextResponse.json(statuses);
   } catch (err) {
     console.error(err);

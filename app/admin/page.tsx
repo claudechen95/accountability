@@ -1,6 +1,7 @@
 import { getUsers, type UserRecord } from "@/lib/kv";
 import AddUserForm from "./AddUserForm";
 import DeleteUserButton from "./DeleteUserButton";
+import EditPhoneForm from "./EditPhoneForm";
 
 function resolveCheckinTopic(user: UserRecord) {
   const upper = user.id.toUpperCase();
@@ -35,6 +36,7 @@ export default async function AdminPage() {
               </div>
               <div className="space-y-1.5">
                 <TopicRow label="Completions" topic={checkin} />
+                <EditPhoneForm id={user.id} phone={user.phone ?? null} />
               </div>
             </div>
           );

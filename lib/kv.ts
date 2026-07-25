@@ -5,7 +5,7 @@ const kv = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
   cache: "no-store",
 });
-import type { Goal, CheckInRecord, WeeklyNote, MoodEntry } from "./types";
+import type { Goal, GoalStatus, CheckInRecord, WeeklyNote, MoodEntry } from "./types";
 
 // Normalize the ?user= param: "alan" and empty both map to undefined (un-prefixed namespace).
 // Call this in every API route when reading the user query param.
@@ -103,6 +103,34 @@ export async function endVacationNow(userId?: string): Promise<void> {
   // Days already spent on vacation stay tagged vacation; today onward behaves normally again.
   windows[idx] = { ...windows[idx], endDate: addDaysToDateStr(today, -1) };
   await kv.set(k(userId, "settings:vacation"), windows.filter((w) => w.startDate <= w.endDate));
+}
+
+// --- Escalating text nudges ---
+// A reply to any nudge text snoozes the whole user (not per-goal — free text can't be reliably
+// attributed to one habit) for the rest of the PST day. Expires naturally at midnight.
+function secondsUntilMidnightPST(): number {
+  const now = new Date();
+  const pstNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+  const msSinceMidnight =
+    pstNow.getHours() * 3600000 + pstNow.getMinutes() * 60000 + pstNow.getSeconds() * 1000;
+  return Math.ceil((86400000 - msSinceMidnight) / 1000);
+}
+
+export async function getNudgeSnoozed(userId: string | undefined, date: string): Promise<boolean> {
+  return !!(await kv.get(k(userId, `nudge:snoozed:${date}`)));
+}
+
+export async function setNudgeSnoozed(userId: string | undefined, date: string): Promise<void> {
+  await kv.set(k(userId, `nudge:snoozed:${date}`), 1, { ex: secondsUntilMidnightPST() });
+}
+
+// Atomically claims this user's send slot for the given PST hour. Returns true if this call
+// claimed it (i.e. no nudge has been sent this hour yet), false if another invocation already did.
+// Claiming BEFORE sending — rather than checking a "last sent" timestamp and writing after —
+// means two overlapping/retried dispatch runs for the same hour can't both pass the check.
+export async function claimNudgeSlot(userId: string | undefined, date: string, hour: number): Promise<boolean> {
+  const result = await kv.set(k(userId, `nudge:sent:${date}:${hour}`), 1, { nx: true, ex: 3540 });
+  return result !== null;
 }
 
 // --- Period helpers ---
@@ -226,6 +254,28 @@ export async function getGoals(userId?: string): Promise<Goal[]> {
 
 export async function saveGoals(goals: Goal[], userId?: string): Promise<void> {
   await kv.set(k(userId, "goals"), goals);
+}
+
+export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
+  const goals = await getGoals(userId);
+  return Promise.all(
+    goals.map(async (goal) => {
+      const [completed, streak, todayCount, lastPeriodMissed] = await Promise.all([
+        getCompletedThisPeriod(goal, userId),
+        getStreak(goal, userId),
+        getCheckInsForPeriod(goal.id, getTodayDate(), userId),
+        getLastPeriodMissed(goal, userId),
+      ]);
+      return {
+        ...goal,
+        completedThisPeriod: completed,
+        isDone: completed >= goal.targetCount,
+        streak,
+        todayCount,
+        lastPeriodMissed,
+      };
+    })
+  );
 }
 
 // --- Check-in records (individual events with timestamps) ---
@@ -579,6 +629,7 @@ export interface UserRecord {
   id: string;
   label: string;
   checkinTopic?: string; // ntfy topic for habit completions
+  phone?: string; // E.164 number for escalating text nudges (Sendblue)
 }
 
 const DEFAULT_USERS: UserRecord[] = [
@@ -597,17 +648,32 @@ export async function getUsers(): Promise<UserRecord[]> {
 export async function addUser(
   id: string,
   label: string,
-  checkinTopic?: string
+  checkinTopic?: string,
+  phone?: string
 ): Promise<void> {
   const users = await getUsers();
   if (users.find((u) => u.id === id)) return;
-  users.push({ id, label, checkinTopic });
+  users.push({ id, label, checkinTopic, phone });
   await kv.set("users", users);
 }
 
 export async function removeUser(id: string): Promise<void> {
   const users = await getUsers();
   await kv.set("users", users.filter((u) => u.id !== id));
+}
+
+export async function setUserPhone(id: string, phone: string): Promise<void> {
+  const users = await getUsers();
+  const user = users.find((u) => u.id === id);
+  if (!user) return;
+  user.phone = phone || undefined;
+  await kv.set("users", users);
+}
+
+// Finds the UserRecord whose phone number matches an inbound text's sender number.
+export async function findUserByPhone(phone: string): Promise<UserRecord | undefined> {
+  const users = await getUsers();
+  return users.find((u) => u.phone === phone);
 }
 
 // Resolve ntfy topic for habit-completion notifications: checks Redis UserRecord first,
