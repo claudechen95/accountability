@@ -12,10 +12,17 @@ interface TranscriptChunkMetadata {
 // namespaced so this app's transcript chunks never collide with its data.
 const COACH_NAMESPACE = "coach-transcripts";
 
-const index = new Index<TranscriptChunkMetadata>({
-  url: process.env.UPSTASH_VECTOR_REST_URL!,
-  token: process.env.UPSTASH_VECTOR_REST_TOKEN!,
-}).namespace(COACH_NAMESPACE);
+let index: ReturnType<typeof createIndex> | null = null;
+function createIndex() {
+  return new Index<TranscriptChunkMetadata>({
+    url: process.env.UPSTASH_VECTOR_REST_URL!,
+    token: process.env.UPSTASH_VECTOR_REST_TOKEN!,
+  }).namespace(COACH_NAMESPACE);
+}
+function getIndex() {
+  if (!index) index = createIndex();
+  return index;
+}
 
 export interface TranscriptExcerpt {
   text: string;
@@ -27,7 +34,7 @@ export interface TranscriptExcerpt {
 // Semantic search over the ingested coaching transcripts (see scripts/ingest-transcripts.mjs).
 // Relies on the index's hosted embedding model to embed `query` server-side.
 export async function searchTranscripts(query: string, topK = 6): Promise<TranscriptExcerpt[]> {
-  const results = await index.query({
+  const results = await getIndex().query({
     data: query,
     topK,
     includeMetadata: true,

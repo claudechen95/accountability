@@ -2,7 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { CoachMessage } from "./kv";
 import type { TranscriptExcerpt } from "./vector";
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+let anthropic: Anthropic | null = null;
+function getAnthropic(): Anthropic {
+  if (!anthropic) anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  return anthropic;
+}
 
 const MODEL = "claude-sonnet-5";
 const MAX_HISTORY_MESSAGES = 20;
@@ -66,7 +70,7 @@ export async function* streamCoachReply(
     };
   });
 
-  const stream = anthropic.messages.stream({
+  const stream = getAnthropic().messages.stream({
     model: MODEL,
     max_tokens: 4096,
     system: buildSystemPrompt(excerpts),
