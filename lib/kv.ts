@@ -664,6 +664,35 @@ export async function deleteJournalEntry(id: string, userId?: string): Promise<v
   }
 }
 
+// --- Coach chat ---
+
+export interface CoachMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  timestamp: number;
+}
+
+export async function getCoachMessages(userId?: string, limit = 100): Promise<CoachMessage[]> {
+  const raw = await kv.lrange<string | CoachMessage>(k(userId, "coach:chat"), -limit, -1);
+  return raw.map((e) => (typeof e === "string" ? JSON.parse(e) : e));
+}
+
+export async function addCoachMessage(
+  role: "user" | "assistant",
+  text: string,
+  userId?: string
+): Promise<CoachMessage> {
+  const message: CoachMessage = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role,
+    text,
+    timestamp: Date.now(),
+  };
+  await kv.rpush(k(userId, "coach:chat"), JSON.stringify(message));
+  return message;
+}
+
 // --- User registry ---
 
 export interface UserRecord {
