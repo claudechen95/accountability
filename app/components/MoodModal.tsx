@@ -169,6 +169,42 @@ export function EmotionWheel({ selected, onSelect }: { selected: string; onSelec
   );
 }
 
+// A short pause before the wheel appears, so the entry is a reflection on the day rather than a
+// reflex tap on whatever the last few minutes felt like. Long enough to actually think, short
+// enough not to be a toll booth.
+const REFLECT_SECONDS = 5;
+
+function CountdownRing({ secondsLeft, total }: { secondsLeft: number; total: number }) {
+  const size = 76;
+  const stroke = 4;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const remaining = secondsLeft / total;
+
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#eef2ff" strokeWidth={stroke} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="#6366f1"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - remaining)}
+          style={{ transition: "stroke-dashoffset 1s linear" }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center text-2xl font-semibold text-gray-900 tabular-nums">
+        {secondsLeft}
+      </div>
+    </div>
+  );
+}
+
 export function MoodModal({
   onSubmit,
   onClose,
@@ -180,11 +216,18 @@ export function MoodModal({
   const [text, setText] = useState("");
   const [customMode, setCustomMode] = useState(false);
   const [customEmotion, setCustomEmotion] = useState("");
+  const [secondsLeft, setSecondsLeft] = useState(REFLECT_SECONDS);
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = ""; };
   }, []);
+
+  useEffect(() => {
+    if (secondsLeft <= 0) return;
+    const t = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [secondsLeft]);
 
   const effectiveEmoji = customMode ? customEmotion.trim() : selectedEmoji;
 
@@ -211,45 +254,58 @@ export function MoodModal({
           </button>
         </div>
 
-        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">How are you feeling?</p>
-        <EmotionWheel selected={customMode ? "" : selectedEmoji} onSelect={handleWheelSelect} />
-
-        {customMode ? (
-          <div className="space-y-1">
-            <input
-              type="text"
-              value={customEmotion}
-              onChange={(e) => setCustomEmotion(e.target.value)}
-              placeholder="describe the feeling in your own words…"
-              className="w-full border border-indigo-300 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300"
-              autoFocus
-            />
-            <p className="text-[11px] text-gray-400 text-center">or tap the wheel to pick an emotion</p>
+        {secondsLeft > 0 ? (
+          // The wheel is deliberately not mounted yet: its slide-to-explore tutorial should play
+          // when the user arrives at it, not silently behind the countdown.
+          // The height matches the wheel step's, so the sheet doesn't jump 250px up the screen
+          // the moment the countdown ends.
+          <div className="flex flex-col items-center justify-center gap-6 min-h-[458px] text-center">
+            <p className="text-lg font-medium text-gray-900">Reflect on your whole day.</p>
+            <CountdownRing secondsLeft={secondsLeft} total={REFLECT_SECONDS} />
           </div>
         ) : (
-          <button
-            onClick={() => { setCustomMode(true); setSelectedEmoji(""); }}
-            className="text-xs text-gray-400 hover:text-indigo-500 underline w-full text-center"
-          >
-            not in the wheel?
-          </button>
+          <>
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">How are you feeling?</p>
+            <EmotionWheel selected={customMode ? "" : selectedEmoji} onSelect={handleWheelSelect} />
+
+            {customMode ? (
+              <div className="space-y-1">
+                <input
+                  type="text"
+                  value={customEmotion}
+                  onChange={(e) => setCustomEmotion(e.target.value)}
+                  placeholder="describe the feeling in your own words…"
+                  className="w-full border border-indigo-300 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                  autoFocus
+                />
+                <p className="text-[11px] text-gray-400 text-center">or tap the wheel to pick an emotion</p>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setCustomMode(true); setSelectedEmoji(""); }}
+                className="text-xs text-gray-400 hover:text-indigo-500 underline w-full text-center"
+              >
+                not in the wheel?
+              </button>
+            )}
+
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="What's going on? (optional)"
+              rows={2}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-300"
+            />
+
+            <button
+              onClick={() => effectiveEmoji && onSubmit(effectiveEmoji, text)}
+              disabled={!effectiveEmoji}
+              className="w-full bg-indigo-600 text-white rounded-xl py-2 text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+            >
+              Log check-in
+            </button>
+          </>
         )}
-
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="What's going on? (optional)"
-          rows={2}
-          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-300"
-        />
-
-        <button
-          onClick={() => effectiveEmoji && onSubmit(effectiveEmoji, text)}
-          disabled={!effectiveEmoji}
-          className="w-full bg-indigo-600 text-white rounded-xl py-2 text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors"
-        >
-          Log check-in
-        </button>
       </div>
     </div>
   );
