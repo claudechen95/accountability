@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
-import type { Goal } from "@/lib/types";
+import type { Goal, TargetChange } from "@/lib/types";
+import { buildTargetTrend, daysBetween, monthTicks, targetLevels } from "@/lib/target-history";
 
 const PST = "America/Los_Angeles";
 
@@ -22,6 +23,7 @@ interface GoalHistory {
   entries: HistoryEntry[];
   streak: number;
   reflections: Record<string, string>;
+  targetHistory: TargetChange[];
 }
 
 // --- Tooltip ---
@@ -239,6 +241,116 @@ function DailyGrid({
   );
 }
 
+// --- Target over time ---
+// A step line of what the habit has asked of the user, so a ramp-up (or a scaling back) is
+// visible next to the grid of whether they actually did it. Purely a record: the grid above it
+// still scores every past day against the habit's current target.
+const CHART = { width: 300, height: 84, padLeft: 46, padRight: 6, padTop: 10, padBottom: 18 };
+const UP = "#22c55e";   // green-500, same green the grid uses for a completed day
+const DOWN = "#fbbf24"; // amber-400
+
+function TargetTrendChart({ changes }: { changes: TargetChange[] }) {
+  const trend = buildTargetTrend(changes, getTodayPST());
+  if (!trend) return null; // target never moved — a flat line is just noise
+
+  const plotWidth = CHART.width - CHART.padLeft - CHART.padRight;
+  const plotHeight = CHART.height - CHART.padTop - CHART.padBottom;
+  const totalDays = Math.max(1, daysBetween(trend.domainStart, trend.domainEnd));
+  const span = trend.maxPerWeek - trend.minPerWeek;
+
+  const x = (date: string) =>
+    CHART.padLeft + (daysBetween(trend.domainStart, date) / totalDays) * plotWidth;
+  // A reshape that doesn't change the weekly total has nothing to slope between, so it sits on
+  // the middle of the axis rather than dividing by a zero span.
+  const y = (perWeek: number) =>
+    span === 0
+      ? CHART.padTop + plotHeight / 2
+      : CHART.padTop + (1 - (perWeek - trend.minPerWeek) / span) * plotHeight;
+
+  const points: [number, number][] = [];
+  trend.segments.forEach((segment) => {
+    points.push([x(segment.start), y(segment.perWeek)]);
+    points.push([x(segment.end), y(segment.perWeek)]);
+  });
+  const path = (pts: [number, number][]) =>
+    pts.map(([px, py], i) => `${i === 0 ? "M" : "L"} ${px.toFixed(1)} ${py.toFixed(1)}`).join(" ");
+
+  // The stretch before the first recorded change has no known start date, so it's drawn dashed
+  // and running off the left edge rather than pretending the habit began there.
+  const leadIn = trend.openStart ? points.slice(0, 2) : [];
+  const solid = trend.openStart ? points.slice(1) : points;
+
+  const ticks = monthTicks(trend).filter(
+    (tick, i, all) => i === 0 || x(tick.date) - x(all[i - 1].date) > 24
+  );
+  const latest = trend.steps[trend.steps.length - 1];
+  const latestLabel = new Date(latest.date + "T12:00:00").toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+
+  return (
+    <div className="mt-5 pt-4 border-t border-gray-100">
+      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Target over time</p>
+      <svg viewBox={`0 0 ${CHART.width} ${CHART.height}`} className="w-full" role="img" aria-label="Target over time">
+        {targetLevels(trend).map((level) => (
+          <g key={level.perWeek}>
+            <line
+              x1={CHART.padLeft}
+              x2={CHART.width - CHART.padRight}
+              y1={y(level.perWeek)}
+              y2={y(level.perWeek)}
+              stroke="#f3f4f6"
+              strokeWidth={1}
+            />
+            <text
+              x={CHART.padLeft - 6}
+              y={y(level.perWeek) + 3}
+              textAnchor="end"
+              fontSize={9}
+              fill="#9ca3af"
+            >
+              {level.label}
+            </text>
+          </g>
+        ))}
+
+        {leadIn.length > 0 && (
+          <path d={path(leadIn)} fill="none" stroke="#d1d5db" strokeWidth={1.5} strokeDasharray="3 3" />
+        )}
+        <path d={path(solid)} fill="none" stroke="#111827" strokeWidth={1.5} strokeLinejoin="round" />
+
+        {trend.steps.map((step) => (
+          <circle
+            key={step.date}
+            cx={x(step.date)}
+            cy={y(step.to.perWeek)}
+            r={2.6}
+            fill="#ffffff"
+            stroke={step.direction === "up" ? UP : DOWN}
+            strokeWidth={1.8}
+          >
+            <title>{`${step.from.label} → ${step.to.label} · ${step.date}`}</title>
+          </circle>
+        ))}
+        <circle cx={x(trend.domainEnd)} cy={y(trend.segments[trend.segments.length - 1].perWeek)} r={2} fill="#111827" />
+
+        {ticks.map((tick) => (
+          <text key={tick.date} x={x(tick.date)} y={CHART.height - 5} textAnchor="middle" fontSize={9} fill="#9ca3af">
+            {tick.label}
+          </text>
+        ))}
+      </svg>
+      <p className="text-[11px] text-gray-400 mt-1">
+        <span className={latest.direction === "up" ? "text-green-600" : "text-amber-500"}>
+          {latest.direction === "up" ? "↑" : "↓"}
+        </span>{" "}
+        {latest.from.label} → {latest.to.label} on {latestLabel}
+      </p>
+    </div>
+  );
+}
+
 function StatPill({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="text-center">
@@ -255,7 +367,7 @@ function GoalHistoryCard({
   goalHistory: GoalHistory;
   onBackfill: (goalId: string, period: string) => void;
 }) {
-  const { goal, entries, streak, reflections } = goalHistory;
+  const { goal, entries, streak, reflections, targetHistory } = goalHistory;
   const today = getTodayPST();
   const doneCount = entries.filter((e) => e.done).length;
   // Days after graduation were never expected, so they'd only drag the completion rate down
@@ -285,7 +397,12 @@ function GoalHistoryCard({
         <div className="w-px bg-gray-200" />
         <StatPill label="check-ins" value={doneCount} />
         <div className="w-px bg-gray-200" />
-        <StatPill label="streak" value={streak > 0 ? `🔥 ${streak}` : "—"} />
+        {/* Days for a daily habit, weeks for a weekly one. Spelled out because a bare "🔥 9" on a
+            grid that shows three months reads as weeks even when it's days. */}
+        <StatPill
+          label={goal.frequency === "daily" ? "day streak" : "week streak"}
+          value={streak > 0 ? `🔥 ${streak}` : "—"}
+        />
       </div>
 
       <DailyGrid
@@ -294,6 +411,8 @@ function GoalHistoryCard({
         reflections={reflections}
         onBackfill={(period) => onBackfill(goal.id, period)}
       />
+
+      <TargetTrendChart changes={targetHistory ?? []} />
     </div>
   );
 }

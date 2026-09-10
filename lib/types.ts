@@ -23,6 +23,24 @@ export interface Goal {
   graduationSnoozedUntil?: string; // YYYY-MM-DD
 }
 
+// One target a habit has had, appended whenever the target changes. The record is the target as
+// of `date` - not the change - so a chart of them is a step line, and the direction of a change
+// is just this entry compared with the one before it.
+//
+// This is a log, not a scoring input: getHistory, the streaks and graduation all still judge
+// every past period against the habit's *current* target. Nothing reads target history to decide
+// whether a day or a week was met.
+export interface TargetChange {
+  date: string;                     // YYYY-MM-DD (PST) the target took effect
+  at: number;                       // epoch ms, so several edits on one day still order
+  frequency: "daily" | "weekly";
+  targetCount: number;
+  // Where the record came from. "created" is a real start date, so a chart can begin the line
+  // there; "backfilled" is the target a habit already had when we first noticed it change, whose
+  // true start date we never recorded, so the line before it is open-ended.
+  origin: "created" | "edited" | "backfilled";
+}
+
 export interface MoodEntry {
   id: string;
   timestamp: number;

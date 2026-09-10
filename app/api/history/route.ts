@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { getGoals, getHistory, getStreak, getReflectionsForGoal, resolveUser } from "@/lib/kv";
+import {
+  getGoals,
+  getHistory,
+  getStreak,
+  getReflectionsForGoal,
+  getTargetHistory,
+  resolveUser,
+} from "@/lib/kv";
 
 export async function GET(req: Request) {
   try {
@@ -11,15 +18,16 @@ export async function GET(req: Request) {
         const periods = 91;
         // A graduated habit stopped being tracked, so recomputing its streak would just show it
         // decaying toward zero. Report the run frozen at graduation instead.
-        const [entries, streak] = await Promise.all([
+        const [entries, streak, targetHistory] = await Promise.all([
           getHistory(goal, periods, user),
           goal.graduatedAt ? Promise.resolve(goal.graduatedRun ?? 0) : getStreak(goal, user),
+          getTargetHistory(goal.id, user),
         ]);
 
         // Reflections are now stored by date key for all goal types
         const reflections = await getReflectionsForGoal(goal.id, entries.map((e) => e.period), user);
 
-        return { goal, entries, streak, reflections };
+        return { goal, entries, streak, reflections, targetHistory };
       })
     );
 

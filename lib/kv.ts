@@ -5,7 +5,8 @@ const kv = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
   cache: "no-store",
 });
-import type { Goal, GoalStatus, CheckInRecord, WeeklyNote, MoodEntry, ReflectionPrompt } from "./types";
+import type { Goal, GoalStatus, CheckInRecord, WeeklyNote, MoodEntry, ReflectionPrompt, TargetChange } from "./types";
+import { sameTarget } from "./target-history";
 
 // Normalize the ?user= param: "alan" and empty both map to undefined (un-prefixed namespace).
 // Call this in every API route when reading the user query param.
@@ -490,6 +491,60 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
       };
     })
   );
+}
+
+// --- Target history ---
+// What each habit has been asked to hit, and since when. Appended only - never rewritten - and
+// read only for display: nothing here feeds getHistory, the streaks or graduation, all of which
+// still score every past period against the habit's current target.
+
+export async function getTargetHistory(goalId: string, userId?: string): Promise<TargetChange[]> {
+  const raw = await kv.lrange<string | TargetChange>(k(userId, `target-history:${goalId}`), 0, -1);
+  const changes = raw.map((entry) => (typeof entry === "string" ? (JSON.parse(entry) as TargetChange) : entry));
+  return changes.sort((a, b) => (a.date === b.date ? a.at - b.at : a.date < b.date ? -1 : 1));
+}
+
+async function appendTargetChange(
+  goalId: string,
+  target: Pick<Goal, "frequency" | "targetCount">,
+  origin: TargetChange["origin"],
+  userId?: string
+): Promise<void> {
+  const record: TargetChange = {
+    date: getTodayDate(),
+    at: Date.now(),
+    frequency: target.frequency,
+    targetCount: target.targetCount,
+    origin,
+  };
+  await kv.rpush(k(userId, `target-history:${goalId}`), JSON.stringify(record));
+}
+
+/**
+ * Record what a habit's target became, if it in fact became anything new. Called on every goal
+ * write, so the no-change case (renaming a habit, moving its nudge time) has to be a no-op -
+ * otherwise the chart fills with steps the user never took.
+ *
+ * `previous` is undefined for a habit being created, which is the one case where we know a real
+ * start date. When an existing habit changes and we have no record of what it was before - every
+ * habit predating this feature, and anything a migration edited behind the API's back - the old
+ * target is written first as a `backfilled` record so the chart has something to step down from.
+ * Its date is wrong (it's the change date, not the true start), which is exactly why the trend
+ * builder draws the segment before the first change as open-ended.
+ */
+export async function recordTargetChange(goal: Goal, previous: Goal | undefined, userId?: string): Promise<void> {
+  if (!previous) {
+    await appendTargetChange(goal.id, goal, "created", userId);
+    return;
+  }
+  if (sameTarget(previous, goal)) return;
+
+  const history = await getTargetHistory(goal.id, userId);
+  const last = history[history.length - 1];
+  if (!last || !sameTarget(last, previous)) {
+    await appendTargetChange(goal.id, previous, "backfilled", userId);
+  }
+  await appendTargetChange(goal.id, goal, "edited", userId);
 }
 
 // --- Check-in records (individual events with timestamps) ---

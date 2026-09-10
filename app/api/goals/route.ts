@@ -5,6 +5,7 @@ import {
   getGoalStatuses,
   renumberGoals,
   resolveUser,
+  recordTargetChange,
   graduateGoal,
   ungraduateGoal,
   snoozeGraduation,
@@ -29,6 +30,7 @@ export async function POST(req: Request) {
 
     // Add or update a goal
     const existing = goals.findIndex((g) => g.id === body.id);
+    const previous = existing >= 0 ? { ...goals[existing] } : undefined;
     if (existing >= 0) {
       goals[existing] = { ...goals[existing], ...body };
     } else {
@@ -36,6 +38,9 @@ export async function POST(req: Request) {
       renumberGoals(goals); // new goal — assign it the next nudge number
     }
     await saveGoals(goals, user);
+    // After the save, so a target change is only ever logged for one that actually landed. A
+    // no-op for every edit that leaves frequency and targetCount alone.
+    await recordTargetChange(goals[existing >= 0 ? existing : goals.length - 1], previous, user);
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error(err);
