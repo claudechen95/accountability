@@ -18,7 +18,16 @@ export async function GET(req: Request) {
 
     if (week) {
       const note = await getWeeklyNote(week, user);
-      return NextResponse.json(note || { week, weekLabel: getWeekLabel(week), headline: "", notes: "", changes: [] });
+      return NextResponse.json(
+        note || {
+          week,
+          weekLabel: getWeekLabel(week),
+          headline: "",
+          wentWell: [],
+          didntGoWell: [],
+          actionItems: [],
+        }
+      );
     }
 
     const notes = await getAllWeeklyNotes(52, user);
@@ -34,18 +43,28 @@ export async function POST(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const body = await req.json();
-    const { week, headline, notes, changes } = body;
+    const { week, headline, wentWell, didntGoWell, actionItems, notes, changes } = body;
 
     if (!week) {
       return NextResponse.json({ error: "Week is required" }, { status: 400 });
     }
 
+    // Drop blank bullets rather than storing them - a trailing newline in a textarea shouldn't
+    // become an empty list item on the card.
+    const bullets = (value: unknown): string[] =>
+      Array.isArray(value) ? value.map((s) => String(s).trim()).filter(Boolean) : [];
+
     await saveWeeklyNote({
       week,
       weekLabel: getWeekLabel(week),
       headline: headline || "",
-      notes: notes || "",
-      changes: changes || [],
+      wentWell: bullets(wentWell),
+      didntGoWell: bullets(didntGoWell),
+      actionItems: bullets(actionItems),
+      // Passed through only when the client is editing a pre-sections note, so editing one
+      // doesn't blank the prose it still displays.
+      ...(notes ? { notes } : {}),
+      ...(changes?.length ? { changes } : {}),
     }, user);
 
     return NextResponse.json({ ok: true });

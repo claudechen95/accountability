@@ -60,8 +60,15 @@ export interface WeeklyNote {
   week: string;       // "2026-W13"
   weekLabel: string;  // "Week of Mar 24"
   headline: string;
-  notes: string;
-  changes: string[];
+  // The meeting itself has these four sections, so the note stores them as four fields rather
+  // than as one prose blob the reader has to parse. One string per bullet.
+  wentWell: string[];
+  didntGoWell: string[];
+  actionItems: string[];
+  // Retired free-form fields, optional so notes written before the sections existed still read
+  // back and still render. Nothing writes them now.
+  notes?: string;
+  changes?: string[];
   updatedAt: number;
 }
 

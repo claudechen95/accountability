@@ -58,6 +58,18 @@ function recentWeekOptions(n = 6): { key: string; label: string; rel: string }[]
   });
 }
 
+// A section is one bullet per line in the textarea, which keeps entry as fast as typing prose
+// while still storing the structure the card renders.
+const toText = (bullets?: string[]): string => (bullets ?? []).join("\n");
+const toBullets = (text: string): string[] =>
+  text.split("\n").map((line) => line.replace(/^[-•*]\s*/, "").trim()).filter(Boolean);
+
+const SECTIONS = [
+  { key: "wentWell", label: "What went well", accent: "text-emerald-600", bullet: "text-emerald-500" },
+  { key: "didntGoWell", label: "What didn't go well", accent: "text-rose-600", bullet: "text-rose-500" },
+  { key: "actionItems", label: "Action items", accent: "text-indigo-600", bullet: "text-indigo-500" },
+] as const;
+
 function NoteForm({
   initial,
   weekKey,
@@ -72,7 +84,9 @@ function NoteForm({
   onCancel: () => void;
 }) {
   const [headline, setHeadline] = useState(initial?.headline ?? "");
-  const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [wentWell, setWentWell] = useState(toText(initial?.wentWell));
+  const [didntGoWell, setDidntGoWell] = useState(toText(initial?.didntGoWell));
+  const [actionItems, setActionItems] = useState(toText(initial?.actionItems));
   const [saving, setSaving] = useState(false);
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
 
@@ -85,9 +99,13 @@ function NoteForm({
       body: JSON.stringify({
         week: weekKey,
         headline,
-        notes,
-        // The progress log was retired - new notes never add one. Existing notes keep theirs,
-        // so editing one has to pass the old lines back through rather than blank them out.
+        wentWell: toBullets(wentWell),
+        didntGoWell: toBullets(didntGoWell),
+        actionItems: toBullets(actionItems),
+        // The free-form body and the progress log were both retired - new notes never add one.
+        // Notes written before the sections existed keep theirs, so editing one has to pass the
+        // old content back through rather than blank it out.
+        notes: initial?.notes ?? "",
         changes: initial?.changes ?? [],
       }),
     });
@@ -109,13 +127,25 @@ function NoteForm({
         required
         autoFocus
       />
-      <textarea
-        placeholder="Notes (optional)"
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        rows={6}
-        className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
-      />
+      {SECTIONS.map(({ key, label, accent }) => {
+        const value = key === "wentWell" ? wentWell : key === "didntGoWell" ? didntGoWell : actionItems;
+        const setValue =
+          key === "wentWell" ? setWentWell : key === "didntGoWell" ? setDidntGoWell : setActionItems;
+        return (
+          <div key={key} className="space-y-1.5">
+            <label className={`block text-xs font-semibold uppercase tracking-wide ${accent}`}>
+              {label}
+            </label>
+            <textarea
+              placeholder="One per line"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              rows={4}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+            />
+          </div>
+        );
+      })}
       <div className="flex gap-2 pt-1">
         <button
           type="submit"
@@ -187,7 +217,11 @@ function NoteCard({ note, onEdit }: { note: WeeklyNote; onEdit: () => void }) {
           </div>
           <div className="min-w-0">
             <p className="text-xs font-medium text-gray-500">{note.weekLabel}</p>
-            <p className="font-semibold text-gray-900 truncate">{note.headline}</p>
+            {/* The headline is the note's own summary, so an expanded card shows it in full -
+                truncating it there would hide the one line that frames the sections below. */}
+            <p className={`font-semibold text-gray-900 ${expanded ? "" : "truncate"}`}>
+              {note.headline}
+            </p>
           </div>
         </div>
         <svg
@@ -202,12 +236,29 @@ function NoteCard({ note, onEdit }: { note: WeeklyNote; onEdit: () => void }) {
 
       {expanded && (
         <div className="px-4 pb-4 border-t border-gray-100">
-          <div className="pt-3">
+          <div className="pt-3 space-y-4">
+            {SECTIONS.map(({ key, label, accent, bullet }) => {
+              const items = note[key] ?? [];
+              if (items.length === 0) return null;
+              return (
+                <div key={key}>
+                  <p className={`text-xs font-semibold uppercase tracking-wide mb-2 ${accent}`}>{label}</p>
+                  <ul className="space-y-1.5">
+                    {items.map((item, i) => (
+                      <li key={i} className="text-sm text-gray-700 flex items-start gap-2 leading-relaxed">
+                        <span className={`leading-relaxed ${bullet}`}>•</span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+            {/* Retired - kept so notes written before the sections existed still render. */}
             {note.notes && (
-              <p className="text-sm text-gray-700 mb-4 leading-relaxed">{note.notes}</p>
+              <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{note.notes}</p>
             )}
-            {/* Retired - kept so notes written before the progress log was removed still render. */}
-            {note.changes?.length > 0 && (
+            {note.changes && note.changes.length > 0 && (
               <div className="bg-gray-50 rounded-xl p-3">
                 <p className="text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">Progress Log</p>
                 <ul className="space-y-2">
@@ -222,7 +273,7 @@ function NoteCard({ note, onEdit }: { note: WeeklyNote; onEdit: () => void }) {
             )}
             <button
               onClick={onEdit}
-              className="mt-3 text-xs text-gray-400 hover:text-gray-600 underline"
+              className="text-xs text-gray-400 hover:text-gray-600 underline"
             >
               edit
             </button>

@@ -108,7 +108,7 @@ Mood entries: `mood:{YYYY-MM-DD}` → list of `MoodEntry` JSON strings. Also inc
 
 Target history: `target-history:{goalId}` → list of `TargetChange` JSON strings, appended chronologically (`rpush`), one per target the habit has had.
 
-Weekly notes: `note:{YYYY-WXX}` → `WeeklyNote`, keyed by **ISO-8601 week** (Monday-start; week 1 contains Jan 4; the year is the ISO year, so Mon Dec 29 2025 is `2026-W01`). `getWeekKey` in `lib/kv.ts` is the only thing that should compute one - `NotesView`'s client-side `getWeekKeyForDate` mirrors it and must stay in step. Until Aug 2026 `getWeekKey` phased weeks off Jan 4's weekday instead, so in 2026 it returned Sunday–Saturday weeks numbered one below ISO: on Wed Aug 26 it produced `2026-W34`, the key already holding the note labelled "Week of Aug 17", so writing "this week" would have overwritten last week's note. Stored notes were unaffected (their keys and labels were already ISO-correct), so the fix was to `getWeekKey` alone with no data migration. `legacyWeekKey` preserves the old numbering solely to read the two pre-existing `checkin:gym:2026-W1x` keys via the legacy fallback in `getWeeklyDaysCompleted`. Seeded via `seedInitialWeeklyNote()`, `seedWeeklyNoteW22()`, etc., all called in the GET handler of `app/api/notes/route.ts` - only for Alan's namespace (`!user`). Other users start with empty notes.
+Weekly notes: `note:{YYYY-WXX}` → `WeeklyNote`. A note is a headline plus the meeting's three sections - `wentWell`, `didntGoWell`, `actionItems`, each a `string[]` of bullets. `notes` (a single prose body) and `changes` (a progress log) are the retired shapes that preceded them: both are optional, nothing writes them any more, and `NoteCard` still renders them so notes written before the sections existed read back whole. The three most recent notes at the time of the change (`2026-W37`, `2026-W35`, `2026-W34`) were rewritten in place into sections; everything older still carries prose. Keyed by **ISO-8601 week** (Monday-start; week 1 contains Jan 4; the year is the ISO year, so Mon Dec 29 2025 is `2026-W01`). `getWeekKey` in `lib/kv.ts` is the only thing that should compute one - `NotesView`'s client-side `getWeekKeyForDate` mirrors it and must stay in step. Until Aug 2026 `getWeekKey` phased weeks off Jan 4's weekday instead, so in 2026 it returned Sunday–Saturday weeks numbered one below ISO: on Wed Aug 26 it produced `2026-W34`, the key already holding the note labelled "Week of Aug 17", so writing "this week" would have overwritten last week's note. Stored notes were unaffected (their keys and labels were already ISO-correct), so the fix was to `getWeekKey` alone with no data migration. `legacyWeekKey` preserves the old numbering solely to read the two pre-existing `checkin:gym:2026-W1x` keys via the legacy fallback in `getWeeklyDaysCompleted`. Seeded via `seedInitialWeeklyNote()`, `seedWeeklyNoteW22()`, etc., all called in the GET handler of `app/api/notes/route.ts` - only for Alan's namespace (`!user`). Other users start with empty notes.
 
 ## Goal schema
 ```ts
@@ -204,18 +204,21 @@ const note = {
   week: '2026-W26',
   weekLabel: 'Week of Jun 22',
   headline: 'Short headline here',
-  notes: 'Prose summary of the meeting.',
-  // The progress log is retired - new notes leave this empty. NoteCard still renders it for
-  // notes written before the removal, and NoteForm passes the old lines through on edit so
-  // editing an old note doesn't blank its log.
-  changes: [],
+  // The meeting's four sections. One string per bullet - the card renders each list, and the
+  // form edits each as one-bullet-per-line in a textarea.
+  wentWell: ['...'],
+  didntGoWell: ['...'],
+  actionItems: ['...'],
+  // `notes` (prose body) and `changes` (progress log) are both retired - new notes omit them.
+  // NoteCard still renders them for notes written before the sections existed, and NoteForm
+  // passes them back through on edit so editing an old note doesn't blank its prose.
   updatedAt: new Date().toISOString(),
 };
 process.stdout.write(JSON.stringify(note));
 ")"
 ```
 
-**CRITICAL:** use `process.stdout.write(JSON.stringify(note))` — NOT `console.log(JSON.stringify(JSON.stringify(note)))`. Double-encoding stores a string-of-a-string in Redis; when the app reads it back `note.changes` is `undefined` and the page crashes with `TypeError: Cannot read properties of undefined (reading 'length')`.
+**CRITICAL:** use `process.stdout.write(JSON.stringify(note))` — NOT `console.log(JSON.stringify(JSON.stringify(note)))`. Double-encoding stores a string-of-a-string in Redis, so the app reads the note back as a string rather than an object and the card renders with no label, no headline and no sections.
 
 Verify the write worked (result should be `dict`, not `str`):
 ```bash
@@ -254,7 +257,7 @@ Vitest, in `test/`. `.github/workflows/ci.yml` runs lint → typecheck → test 
 
 **Time is pinned.** The data-layer suites `vi.setSystemTime` to Wed 26 Aug 2026. That date is deliberate: a Wednesday leaves 5 days in the week, which is the only way to construct both the "still winnable" and "already out of reach" weekly-goal cases. Never write a test that depends on the day it happens to run — an earlier throwaway script did, and its "out of reach" case was unconstructible on Mondays, so it failed every Monday for no real reason.
 
-Suites: `week-keys` (ISO week numbering, incl. a 400-day sweep across both year boundaries and a guard pinning already-stored note keys to their labels), `reflection` (every branch of `getReflectionPrompt`), `graduation` (eligibility, freeze/restore, the untracked guarantees), `nudges` (the pure `getPendingNudges` predicate, plus the escalation schedule: `nudgeSlots`, `dueSlotIndices`, `addMinutes`, `habitCallStart`, `nextCallTime`, `callScript`), `phone` (E.164 canonicalization, incl. the legacy-format inbound match), `nudge-ladder` (the dispatch route end to end), `nudge-inbound` (the Sendblue reply webhook), `target-history` (what `recordTargetChange` logs - and what it declines to log - plus the step-line maths in `buildTargetTrend`).
+Suites: `week-keys` (ISO week numbering, incl. a 400-day sweep across both year boundaries and a guard pinning already-stored note keys to their labels), `reflection` (every branch of `getReflectionPrompt`), `graduation` (eligibility, freeze/restore, the untracked guarantees), `nudges` (the pure `getPendingNudges` predicate, plus the escalation schedule: `nudgeSlots`, `dueSlotIndices`, `addMinutes`, `habitCallStart`, `nextCallTime`, `callScript`), `phone` (E.164 canonicalization, incl. the legacy-format inbound match), `nudge-ladder` (the dispatch route end to end), `nudge-inbound` (the Sendblue reply webhook), `notes` (the four-section note round-trip, blank-bullet stripping, and the pre-sections prose surviving an edit), `target-history` (what `recordTargetChange` logs - and what it declines to log - plus the step-line maths in `buildTargetTrend`).
 
 `nudge-ladder` is the one suite that drives an API route rather than the data layer.
 It replays a whole PST day at the real cron cadence (a POST every 10 simulated minutes, 8am–11pm) with Sendblue and Twilio mocked, and asserts the exact transcript of what went out and when — for its 18:00 habit, `18:00 text`, `19:20 text`, `20:40 text`, `20:50 call`, `21:00 call`, `21:10 call`, `21:40 partner text`.
