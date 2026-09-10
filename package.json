@@ -8,11 +8,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run lint && npm run typecheck && npm run test",
+    "verify": "npm run check-env && npm run check-lock && npm run lint && npm run typecheck && npm test && npm run build",
     "deploy": "bash scripts/deploy.sh",
     "start": "next start",
     "lint": "next lint",
-    "prepare": "git config core.hooksPath .githooks || true"
+    "prepare": "git config core.hooksPath .githooks || true",
+    "check-env": "node scripts/check-env.mjs",
+    "check-lock": "npm ci --dry-run",
+    "verify:quick": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -36,5 +39,9 @@
     "tailwindcss": "^3.4.1",
     "typescript": "^5",
     "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": "20.20.2",
+    "npm": "10.8.2"
   }
 }

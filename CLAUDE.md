@@ -228,13 +228,23 @@ The curl command is all that's needed — no seed functions, no code changes req
 
 ## Dev
 ```bash
-npm run dev        # localhost:3000
-npm run deploy     # Vercel deploy via scripts/deploy.sh
-npm run verify     # lint + typecheck + test — run this before pushing
-npm test           # vitest run
-npm run test:watch # vitest in watch mode
+nvm use              # node 20.20.2, per .nvmrc — the version CI runs
+npm run dev          # localhost:3000
+npm run deploy       # git push (Vercel deploys from main) via scripts/deploy.sh
+npm run verify       # the full CI sequence — run this before pushing
+npm run verify:quick # lint + typecheck + test, for the inner loop
+npm test             # vitest run
+npm run test:watch   # vitest in watch mode
 ```
 Env vars needed: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` (in `.env.local`).
+
+### Local/CI parity
+
+`npm run verify` mirrors `.github/workflows/ci.yml` step for step — env check, lock check, lint, typecheck, test, build — so a green verify means a green CI. Change one and change the other.
+
+The toolchain is pinned in **`.nvmrc` (20.20.2)**, which CI reads via `node-version-file` and `nvm use` reads locally. npm is not pinned separately; it's whatever that node ships (10.8.2), so matching node matches both. `engines` in `package.json` records the pair and `scripts/check-env.mjs` fails the build when the running toolchain isn't it (`SKIP_ENV_CHECK=1` overrides).
+
+This is not ceremony — it's the fix for a failure that actually happened. CI asked for `node-version: 20`, which resolved to whatever 20.x was newest that week; local dev ran a different node with a different bundled npm. npm versions disagree about which optional peer deps belong in a lock file, so `package-lock.json` written locally by npm 11.6 was **rejected outright** by CI's npm 10.8 (`Missing: @emnapi/core from lock file`), and `npm ci` died before lint, test or build ran at all. CI was red for several pushes that way, and nothing run locally could reproduce it. `npm run check-lock` (`npm ci --dry-run`) is the second half of that fix: it catches a desynced lock in about a second, which is the one failure mode that a passing local test suite says nothing about.
 
 ## Tests
 

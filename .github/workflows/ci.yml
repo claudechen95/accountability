@@ -11,9 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # .nvmrc, not a bare major: "node-version: 20" floated to whatever 20.x was newest that
+      # week, and with it the bundled npm. A newer npm resolves optional peer deps differently
+      # and will reject a lock file an older one wrote, which is how `npm ci` here started
+      # failing on a lock that installed cleanly on the machine that wrote it. Same file drives
+      # `nvm use` locally, so the two can't drift apart again.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci
