@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import {
   getUsers,
   getGoalStatuses,
@@ -41,7 +42,7 @@ type Step = "text" | "call" | "reached" | "partner";
 // The tick rate deliberately carries no meaning: what fires is decided by each habit's own slot
 // times (lib/nudges.ts), so the ladder is identical whether the cron runs every 10 minutes or
 // every 5. Ticking at least as often as the tightest slot spacing is the only real requirement.
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   if (req.headers.get("x-nudge-secret") !== process.env.NUDGE_DISPATCH_SECRET) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
@@ -195,3 +196,5 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ results });
 }
+
+export const POST = withPerf("POST /api/nudge/dispatch", POSTHandler);

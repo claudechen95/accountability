@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import type { CoachMessage } from "@/lib/kv";
+import { timedFetch } from "@/lib/client-perf";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB, matches the server-side cap
 const ACCEPT = ".txt,.md,text/plain,text/markdown,image/png,image/jpeg,image/gif,image/webp,application/pdf";
@@ -80,7 +81,7 @@ export function CoachPage({ userId }: { userId?: string }) {
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
 
   useEffect(() => {
-    fetch(`/api/coach${q}`)
+    timedFetch(`/api/coach${q}`)
       .then((r) => r.json())
       .then((data: CoachMessage[]) => setMessages(data))
       .catch(() => setMessages([]))
@@ -127,7 +128,7 @@ export function CoachPage({ userId }: { userId?: string }) {
     setStreamingText("");
 
     try {
-      const res = await fetch(`/api/coach${q}`, {
+      const res = await timedFetch(`/api/coach${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

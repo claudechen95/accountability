@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { MoodEntry } from "@/lib/types";
 import { MoodModal } from "@/app/components/MoodModal";
+import { timedFetch } from "@/lib/client-perf";
 
 const PST = "America/Los_Angeles";
 
@@ -54,7 +55,7 @@ export function MoodPage({ userId }: { userId?: string }) {
   const q = userId ? `&user=${encodeURIComponent(userId)}` : "";
 
   const load = useCallback(() => {
-    fetch(`/api/mood?date=all${q}`)
+    timedFetch(`/api/mood?date=all${q}`)
       .then((r) => r.json())
       .then((data: MoodEntry[]) => setGroups(groupByDate(data)))
       .catch(() => setGroups([]))
@@ -65,7 +66,7 @@ export function MoodPage({ userId }: { userId?: string }) {
 
   const handleSubmit = async (emoji: string, text: string) => {
     setModalOpen(false);
-    await fetch(`/api/mood${userId ? `?user=${encodeURIComponent(userId)}` : ""}`, {
+    await timedFetch(`/api/mood${userId ? `?user=${encodeURIComponent(userId)}` : ""}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ emoji, text }),
@@ -77,7 +78,7 @@ export function MoodPage({ userId }: { userId?: string }) {
     setDeletingId(entry.id);
     setConfirmId(null);
     const dq = userId ? `?user=${encodeURIComponent(userId)}` : "";
-    await fetch(`/api/mood${dq}`, {
+    await timedFetch(`/api/mood${dq}`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: entry.id, date: entry.date }),

@@ -24,6 +24,7 @@ import versionData from "@/version.json";
 import type { Goal, GoalStatus, ReflectionPrompt } from "@/lib/types";
 import type { VacationWindow } from "@/lib/kv";
 import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
+import { timedFetch, logFirstData } from "@/lib/client-perf";
 
 const PST = "America/Los_Angeles";
 
@@ -741,18 +742,37 @@ function SortableGoalCard(props: React.ComponentProps<typeof GoalCard>) {
   );
 }
 
-export function HomePage({ userId }: { userId?: string }) {
-  const [goals, setGoals] = useState<GoalStatus[]>([]);
+/**
+ * `initialGoals`/`initialVacation` are rendered on the server by `app/[user]/page.tsx`, so the
+ * habit list is in the HTML rather than fetched after hydration. That mattered: the document,
+ * the JS chunks and hydration took 350ms before the first `/api/goals` request was even issued,
+ * and the user stared at a skeleton for the whole of it.
+ *
+ * They're optional. Without them this still works exactly as before - fetch on mount, skeleton
+ * until it lands - which is what the other views do and what a client-side navigation does.
+ */
+export function HomePage({
+  userId,
+  initialGoals,
+  initialVacation,
+}: {
+  userId?: string;
+  initialGoals?: GoalStatus[];
+  initialVacation?: { active: VacationWindow | null; upcoming: VacationWindow | null };
+}) {
+  const [goals, setGoals] = useState<GoalStatus[]>(initialGoals ?? []);
   const [loading, setLoading] = useState(false);
-  const [initialLoad, setInitialLoad] = useState(true);
+  const [initialLoad, setInitialLoad] = useState(!initialGoals);
   const [error, setError] = useState<string | null>(null);
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
   const [moodModalOpen, setMoodModalOpen] = useState(false);
   const [hideDone, setHideDone] = useState(false);
-  const [vacation, setVacation] = useState<VacationWindow | null>(null);
-  const [upcomingVacation, setUpcomingVacation] = useState<VacationWindow | null>(null);
+  const [vacation, setVacation] = useState<VacationWindow | null>(initialVacation?.active ?? null);
+  const [upcomingVacation, setUpcomingVacation] = useState<VacationWindow | null>(
+    initialVacation?.upcoming ?? null
+  );
   const [vacationFormOpen, setVacationFormOpen] = useState(false);
   const [vacationStartDate, setVacationStartDate] = useState(() => getTodayDateStr());
   const [vacationEndDate, setVacationEndDate] = useState(() => addDaysToDateStr(getTodayDateStr(), 7));
@@ -770,7 +790,7 @@ export function HomePage({ userId }: { userId?: string }) {
 
   const fetchGoals = useCallback(async () => {
     try {
-      const res = await fetch(`/api/goals${q}`);
+      const res = await timedFetch(`/api/goals${q}`);
       if (!res.ok) throw new Error("Failed to load");
       const data = await res.json();
       setGoals(data);
@@ -778,12 +798,13 @@ export function HomePage({ userId }: { userId?: string }) {
       setError("Couldn't load goals. Is the server running?");
     } finally {
       setInitialLoad(false);
+      logFirstData("home");
     }
   }, [q]);
 
   const fetchVacation = useCallback(async () => {
     try {
-      const res = await fetch(`/api/vacation${q}`);
+      const res = await timedFetch(`/api/vacation${q}`);
       if (!res.ok) return;
       const data = await res.json();
       setVacation(data.active);
@@ -793,7 +814,16 @@ export function HomePage({ userId }: { userId?: string }) {
     }
   }, [q]);
 
+  // Server-rendered data is already current as of this request, so re-fetching it on mount
+  // would be a second round trip for an identical answer. Later refreshes (midnight, check-ins)
+  // go through fetchGoals as normal.
+  const serverRendered = useRef(!!initialGoals);
   useEffect(() => {
+    if (serverRendered.current) {
+      serverRendered.current = false;
+      logFirstData("home (server-rendered)");
+      return;
+    }
     fetchGoals();
     fetchVacation();
   }, [fetchGoals, fetchVacation]);
@@ -826,7 +856,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const doCheckIn = async (goalId: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/checkins${q}`, {
+      const res = await timedFetch(`/api/checkins${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goalId }),
@@ -857,7 +887,7 @@ export function HomePage({ userId }: { userId?: string }) {
     setMoodModalOpen(false);
     setLoading(true);
     try {
-      await fetch(`/api/mood${q}`, {
+      await timedFetch(`/api/mood${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ emoji, text }),
@@ -876,7 +906,7 @@ export function HomePage({ userId }: { userId?: string }) {
     const isMood = reflectionTarget.type === "mood";
     setReflectionTarget(null);
     if (text.trim()) {
-      await fetch(`/api/reflections${q}`, {
+      await timedFetch(`/api/reflections${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goalId, text }),
@@ -904,7 +934,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const handleUndo = async (goalId: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/checkins${q}`, {
+      const res = await timedFetch(`/api/checkins${q}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goalId }),
@@ -921,7 +951,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const handleSaveHabit = async (goal: Goal) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/goals${q}`, {
+      const res = await timedFetch(`/api/goals${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(goal),
@@ -940,7 +970,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const handleDeleteHabit = async (goalId: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/goals${q}`, {
+      const res = await timedFetch(`/api/goals${q}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: goalId }),
@@ -973,7 +1003,7 @@ export function HomePage({ userId }: { userId?: string }) {
     if (vacationGoalIds.length === 0 || !vacationStartDate || !vacationEndDate) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/vacation${q}`, {
+      const res = await timedFetch(`/api/vacation${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ startDate: vacationStartDate, endDate: vacationEndDate, goalIds: vacationGoalIds }),
@@ -993,7 +1023,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const handleEndVacation = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/vacation${q}`, { method: "DELETE" });
+      const res = await timedFetch(`/api/vacation${q}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to end vacation");
       setVacation(null);
       setUpcomingVacation(null);
@@ -1024,7 +1054,7 @@ export function HomePage({ userId }: { userId?: string }) {
     setGoals(reordered.map((g, i) => ({ ...g, order: i })));
 
     try {
-      await fetch(`/api/goals${q}`, {
+      await timedFetch(`/api/goals${q}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orderedIds: reordered.map((g) => g.id) }),
@@ -1040,7 +1070,7 @@ export function HomePage({ userId }: { userId?: string }) {
   const postGraduation = async (goalId: string, graduation: "graduate" | "ungraduate" | "snooze") => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/goals${q}`, {
+      const res = await timedFetch(`/api/goals${q}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goalId, graduation }),

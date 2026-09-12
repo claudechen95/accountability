@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import { addJournalEntry, getJournalEntries, deleteJournalEntry, resolveUser } from "@/lib/kv";
 
-export async function GET(req: Request) {
+async function GETHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const entries = await getJournalEntries(100, user);
@@ -12,7 +13,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { text } = await req.json();
@@ -27,7 +28,7 @@ export async function POST(req: Request) {
   }
 }
 
-export async function DELETE(req: Request) {
+async function DELETEHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { id } = await req.json();
@@ -38,3 +39,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Failed to delete entry" }, { status: 500 });
   }
 }
+
+export const GET = withPerf("GET /api/journal", GETHandler);
+export const POST = withPerf("POST /api/journal", POSTHandler);
+export const DELETE = withPerf("DELETE /api/journal", DELETEHandler);

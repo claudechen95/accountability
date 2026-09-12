@@ -9,6 +9,11 @@ Personal habit tracker. Next.js 14 app router, Upstash Redis (KV), deployed on V
 - **Types:** `lib/types.ts` — `Goal`, `GoalStatus`, `WeeklyNote`, `CheckInRecord`, `MoodEntry`
 - **Timezone:** Everything PST/PDT (`America/Los_Angeles`). Date strings are `YYYY-MM-DD`.
 
+**The tracker and history pages are server-rendered.** `app/[user]/page.tsx` and `app/[user]/history/page.tsx` (and the un-prefixed `/history`) are `async` server components that read Redis directly and pass the result to their client component as `initialGoals` / `initialHistory`.
+Those props are optional: without them the view fetches on mount as it always did, which is what a client-side navigation and every other view still do.
+`/api/goals`, `/api/vacation` and `/api/history` remain, and are what the client re-fetches after a check-in or at midnight - so any change to what those pages show has **two** call sites to keep in step. `getGoalHistories` in `lib/kv.ts` exists precisely so the history route and the history page can't drift.
+See [Latency instrumentation](#latency-instrumentation) for why.
+
 ## Multi-user architecture
 
 Users are identified by URL path (`/alan`, `/rochisha`). All API routes read `?user=` and pass it through the data layer.
@@ -108,7 +113,7 @@ Mood entries: `mood:{YYYY-MM-DD}` → list of `MoodEntry` JSON strings. Also inc
 
 Target history: `target-history:{goalId}` → list of `TargetChange` JSON strings, appended chronologically (`rpush`), one per target the habit has had.
 
-Weekly notes: `note:{YYYY-WXX}` → `WeeklyNote`. A note is a headline plus the meeting's three sections - `wentWell`, `didntGoWell`, `actionItems`, each a `string[]` of bullets. `notes` (a single prose body) and `changes` (a progress log) are the retired shapes that preceded them: both are optional, nothing writes them any more, and `NoteCard` still renders them so notes written before the sections existed read back whole. The three most recent notes at the time of the change (`2026-W37`, `2026-W35`, `2026-W34`) were rewritten in place into sections; everything older still carries prose. Keyed by **ISO-8601 week** (Monday-start; week 1 contains Jan 4; the year is the ISO year, so Mon Dec 29 2025 is `2026-W01`). `getWeekKey` in `lib/kv.ts` is the only thing that should compute one - `NotesView`'s client-side `getWeekKeyForDate` mirrors it and must stay in step. Until Aug 2026 `getWeekKey` phased weeks off Jan 4's weekday instead, so in 2026 it returned Sunday–Saturday weeks numbered one below ISO: on Wed Aug 26 it produced `2026-W34`, the key already holding the note labelled "Week of Aug 17", so writing "this week" would have overwritten last week's note. Stored notes were unaffected (their keys and labels were already ISO-correct), so the fix was to `getWeekKey` alone with no data migration. `legacyWeekKey` preserves the old numbering solely to read the two pre-existing `checkin:gym:2026-W1x` keys via the legacy fallback in `getWeeklyDaysCompleted`. Seeded via `seedInitialWeeklyNote()`, `seedWeeklyNoteW22()`, etc., all called in the GET handler of `app/api/notes/route.ts` - only for Alan's namespace (`!user`). Other users start with empty notes.
+Weekly notes: `note:{YYYY-WXX}` → `WeeklyNote`. A note is a headline plus the meeting's three sections - `wentWell`, `didntGoWell`, `actionItems`, each a `string[]` of bullets. `notes` (a single prose body) and `changes` (a progress log) are the retired shapes that preceded them: both are optional, nothing writes them any more, and `NoteCard` still renders them so notes written before the sections existed read back whole. Notes are being converted to sections backwards from the newest, per namespace, each rewritten in place with its `notes`/`changes` dropped. **Alan** (`note:*`): `2026-W37`/`W35`/`W34` when the sections were introduced, then `W29`/`W28`/`W27` (Sep 2026); `W30`–`W33` are empty "Vacation" placeholders, so `W13`–`W26` still carry prose. **Claude** (`claude:note:*`): `2026-W37`/`W35`/`W34` (Sep 2026); `W30`–`W33` are empty, so `W25`–`W29` still carry prose. Note that several pre-conversion bodies type their own `What went well` / `What did not go well` / `Action items` headings *inside* the prose blob, which renders as an unformatted wall of text - that's the tell for a note that still needs converting. When searching for notes to convert, glob `*note:*` rather than `note:*`, or the prefixed namespaces are silently missed. Keyed by **ISO-8601 week** (Monday-start; week 1 contains Jan 4; the year is the ISO year, so Mon Dec 29 2025 is `2026-W01`). `getWeekKey` in `lib/kv.ts` is the only thing that should compute one - `NotesView`'s client-side `getWeekKeyForDate` mirrors it and must stay in step. Until Aug 2026 `getWeekKey` phased weeks off Jan 4's weekday instead, so in 2026 it returned Sunday–Saturday weeks numbered one below ISO: on Wed Aug 26 it produced `2026-W34`, the key already holding the note labelled "Week of Aug 17", so writing "this week" would have overwritten last week's note. Stored notes were unaffected (their keys and labels were already ISO-correct), so the fix was to `getWeekKey` alone with no data migration. `legacyWeekKey` preserves the old numbering solely to read the two pre-existing `checkin:gym:2026-W1x` keys via the legacy fallback in `getWeeklyDaysCompleted`. Seeded via `seedInitialWeeklyNote()`, `seedWeeklyNoteW22()`, etc., all called in the GET handler of `app/api/notes/route.ts` - only for Alan's namespace (`!user`). Other users start with empty notes.
 
 ## Goal schema
 ```ts
@@ -249,15 +254,80 @@ The toolchain is pinned in **`.nvmrc` (20.20.2)**, which CI reads via `node-vers
 
 This is not ceremony — it's the fix for a failure that actually happened. CI asked for `node-version: 20`, which resolved to whatever 20.x was newest that week; local dev ran a different node with a different bundled npm. npm versions disagree about which optional peer deps belong in a lock file, so `package-lock.json` written locally by npm 11.6 was **rejected outright** by CI's npm 10.8 (`Missing: @emnapi/core from lock file`), and `npm ci` died before lint, test or build ran at all. CI was red for several pushes that way, and nothing run locally could reproduce it. `npm run check-lock` (`npm ci --dry-run`) is the second half of that fix: it catches a desynced lock in about a second, which is the one failure mode that a passing local test suite says nothing about.
 
+## Latency instrumentation
+
+Upstash is REST: every command is its own HTTPS round trip, with no pipelining anywhere in `lib/kv.ts`.
+So what decides whether a page feels instant is almost entirely **how many commands a request issues**, and that number is invisible in the code — it's the product of a per-goal loop and a per-day loop several call frames apart.
+`lib/perf.ts` counts it.
+
+- **`instrumentRedis`** wraps the client in `lib/kv.ts`. Every command is counted and timed against the current request, and the keys of every *read* are recorded so re-reads within one request are visible.
+- **`span(name, fn)`** times a named block. Spans run concurrently, so summed span time exceeds the request's wall clock — the count and the per-span total are what's meaningful, not the sum.
+- **`withPerf(label, handler)`** wraps every handler in `app/api/*/route.ts`. It logs one line per request and sets `Server-Timing`, so the same numbers appear in the browser's network panel next to the request that caused them. `measure()` is the same thing for server components (`app/page.tsx`).
+- **`lib/client-perf.ts`**'s `timedFetch` replaces `fetch` for every `/api/` call in the view components, and reads `Server-Timing` back off the response so the client wait and the server time land on one line. `logFirstData(view)` logs navigation-start → first-content, which is the only number that includes the JS download and hydration that must finish before the first fetch is even issued — no server log contains it.
+
+Collection is always on (a counter and a `performance.now()` per command). `PERF_VERBOSE=1` adds the per-span, per-command and re-read breakdown:
+
+```bash
+PERF_VERBOSE=1 npm run dev
+# [perf] GET /api/goals 335ms | redis=135cmd/332ms | keys=252uniq/183repeat | spans: … | re-read: settings:vacationx26 · …
+```
+
+`redis=Ncmd/Mms` is command count and the wall-clock time with *at least one* command in flight — compare `M` to the request total to see how much of a route is Redis and nothing else. `keys=Xuniq/Yrepeat` is the waste measure: `Y` is how many reads asked for a key this request had already fetched.
+
+### What it found, and what fixed it
+
+Measured Sep 2026 against Alan's 13 habits at ~12ms RTT to Upstash. `GET /api/goals` issued **135 round trips** and was 99% Redis-blocked; the home page took 778ms to show a habit.
+
+| | before | after |
+|---|---|---|
+| `/alan` first content | 778ms | **332ms** |
+| `/alan/history` first content | 872ms | **232ms** |
+| goals query | 335ms, 135 cmds | **179ms, 20 cmds** |
+| history query | 557ms, 117 cmds | **111ms, 39 cmds** |
+| `/api/mood` | 727ms, 55 cmds | **25ms, 2 cmds** |
+| `/api/notes` | 321ms, 25 cmds | **34ms, 2 cmds** |
+
+Four distinct causes, each with its own fix:
+
+1. **Duplicate reads — 42% of `/api/goals`'s key reads were for keys it had already fetched.** `settings:vacation` was read 26 times, once per goal by each of `getDailyStreak`, `getWeeklyStreak` and `getReflectionPrompt`; each habit's current-week keys three or four times. No single call site was wrong, which is why **`lib/request-cache.ts`** fixes it at the request level instead: a read-through cache opened by `withPerf` for the length of one request. It stores the **promise**, not the value — the duplicate callers run inside one `Promise.all`, so they all ask before any answer arrives and a value cache would miss every time. Every write in `lib/kv.ts` calls `invalidate()` for the keys it touched. Outside a request it's a transparent passthrough.
+2. **Breadth — `getGoalStatuses` ran four Redis-hitting functions per goal, unbatched.** `primeCurrentPeriod` and `primeHistoryLengths` now fetch every goal's current week (one `mget`) and every goal's history length (one pipeline) *before* the per-goal fan-out, so the per-goal calls are cache hits. These two functions are the only places that know a fan-out is happening; nothing downstream had to learn it. `primeTargetHistories` does the same for the history page's 13 `lrange`s.
+3. **Depth — `getDailyStreak` was a `for` loop of up to 365 awaited single `get`s**, so its cost scaled with the streak it was measuring: a 100-day streak meant 100 serialized round trips. Both streak walks now read a block at a time (`STREAK_DAY_BLOCKS`, `STREAK_WEEK_BLOCKS`), fetching the next block only if the previous ran out with the streak still alive. The blocks **grow** (14, 28, 56, 112, 155 days) rather than being one fixed width — the first attempt used a flat 60 and was a wash, because `mget` is not free per key: a 73-key `mget` measured 45ms against 12ms for a small one, and 13 goals each pulling 60-80 keys cost more in payload than the round trips it saved.
+4. **The client-render waterfall — 350ms elapsed before the first fetch was even issued.** The tracker was a client component that shipped a skeleton, so the document → chunks → hydrate chain had to finish first. Those pages are server-rendered now (see [Stack](#stack)).
+
+`getAllMoodEntries` and `getAllWeeklyNotes` were separate, simpler N+1s: a `keys` scan followed by one `lrange`/`get` per key. Now a `keys` scan plus one pipeline/`mget`.
+
+### Region: the function must sit next to Redis
+
+**`vercel.json` pins `regions: ["sfo1"]`, and that is not cosmetic — it was worth more than every code change above combined.**
+
+The Redis database resolves `awake-horse-74703.upstash.io` → `global-latency.upstash.io` → `global-us2.upstash.io` → `52.52.x.x`, which is AWS **us-west-1 (N. California)**. It's an Upstash *Global* database, so reads are already served from the nearest replica — there's nothing to configure there.
+`vercel.json` used to be `{}`, so functions ran in Vercel's default **`iad1` (Virginia)** and every single round trip crossed the continent. `x-vercel-id: sfo1::iad1::…` on a production response is the tell: request enters at the SF edge, function executes in Virginia.
+
+Measured from SF against production, before any of this: **`/api/goals` took 1.2–1.95s**, not the 335ms the same code showed on localhost. A route doing two round trips (`/api/vacation`) took ~190ms from `iad1` against ~20ms from the west coast, which puts a cross-country round trip at **~65ms against ~9ms**. Round-trip *count* and round-trip *cost* were both multiplying, which is why localhost understated the problem by roughly 4×.
+
+Single-region pinning works on the **hobby** plan (verified on a preview deployment; multi-region needs Pro/Enterprise). If `vercel.json` ever needs to drop it, the equivalent is Project Settings → Functions → Region. **Never let this drift back to a default** — and if the Redis database is ever moved or recreated, re-check its region and move this with it.
+
+### Cold vs warm, and why there's no data cache
+
+The tracker page renders in **46ms warm** (20 commands, 43ms of it Redis, ~4 sequential waves at ~10ms each). The first request after a cold start measures ~190ms instead, and the difference is almost entirely the TLS handshake to Upstash plus JIT — not extra queries. So *cold start*, not query volume, is what's left.
+
+This is why there is **no cross-request cache** and shouldn't be one. It could save at most those 46ms, and it would pay for them with staleness in whether a habit is checked in — the single fact the app exists to record and the one the accountability partner is looking at. The cache that mattered is the request-scoped one in `lib/request-cache.ts`, which removed 42% of the reads with no staleness window at all because it cannot outlive the request.
+
+If cold starts ever do need attacking, the lever is the Edge runtime (near-zero boot, and `@upstash/redis` is fetch-based so it works there) — but that constrains what the routes can import (`app/api/coach` uses the Anthropic SDK), so measure first rather than assuming.
+
 ## Tests
 
 Vitest, in `test/`. `.github/workflows/ci.yml` runs lint → typecheck → test → build on every push to `main` and every PR.
 
 **No live Redis.** `test/setup.ts` mocks `@upstash/redis` so every `new Redis(...)` returns the shared in-memory `FakeRedis` from `test/redis-fake.ts`. That fake implements exactly the command surface `lib/kv.ts` uses and preserves the Upstash semantics `kv.ts` depends on (`mget` returns `null` for missing keys, lists are newest-first via `lpush`, and `set` with `nx` returns `null` rather than `"OK"` when the key exists — the nudge ladder's no-double-send guarantee is exactly that return value, so a fake that always said `"OK"` would make a broken dispatch look correct). Add a command to `kv.ts` and the fake needs it too — better a loud failure than a silent `undefined`.
 
+The fake also **records every command it is asked to run**, in `fakeRedis.calls` (as `"<command> <keys>"`), with `countCommands(fn)` as the convenience wrapper.
+Round-trip count is the thing that decides how a page feels against a REST Redis, and it's a property no assertion on returned data can catch — an N+1 returns exactly the right answer, just slowly, which is how `GET /api/goals` sat at 135 round trips for as long as it did.
+`pipeline().exec()` is recorded as the single round trip it is, keeping the keys it batched, so a test can assert both how many commands went out and what was batched.
+
 **Time is pinned.** The data-layer suites `vi.setSystemTime` to Wed 26 Aug 2026. That date is deliberate: a Wednesday leaves 5 days in the week, which is the only way to construct both the "still winnable" and "already out of reach" weekly-goal cases. Never write a test that depends on the day it happens to run — an earlier throwaway script did, and its "out of reach" case was unconstructible on Mondays, so it failed every Monday for no real reason.
 
-Suites: `week-keys` (ISO week numbering, incl. a 400-day sweep across both year boundaries and a guard pinning already-stored note keys to their labels), `reflection` (every branch of `getReflectionPrompt`), `graduation` (eligibility, freeze/restore, the untracked guarantees), `nudges` (the pure `getPendingNudges` predicate, plus the escalation schedule: `nudgeSlots`, `dueSlotIndices`, `addMinutes`, `habitCallStart`, `nextCallTime`, `callScript`), `phone` (E.164 canonicalization, incl. the legacy-format inbound match), `nudge-ladder` (the dispatch route end to end), `nudge-inbound` (the Sendblue reply webhook), `notes` (the four-section note round-trip, blank-bullet stripping, and the pre-sections prose surviving an edit), `target-history` (what `recordTargetChange` logs - and what it declines to log - plus the step-line maths in `buildTargetTrend`).
+Suites: `week-keys` (ISO week numbering, incl. a 400-day sweep across both year boundaries and a guard pinning already-stored note keys to their labels), `reflection` (every branch of `getReflectionPrompt`), `graduation` (eligibility, freeze/restore, the untracked guarantees), `nudges` (the pure `getPendingNudges` predicate, plus the escalation schedule: `nudgeSlots`, `dueSlotIndices`, `addMinutes`, `habitCallStart`, `nextCallTime`, `callScript`), `phone` (E.164 canonicalization, incl. the legacy-format inbound match), `nudge-ladder` (the dispatch route end to end), `nudge-inbound` (the Sendblue reply webhook), `notes` (the four-section note round-trip, blank-bullet stripping, and the pre-sections prose surviving an edit), `target-history` (what `recordTargetChange` logs - and what it declines to log - plus the step-line maths in `buildTargetTrend`), `batching` (the round-trip counts of the page-load reads).
 
 `nudge-ladder` is the one suite that drives an API route rather than the data layer.
 It replays a whole PST day at the real cron cadence (a POST every 10 simulated minutes, 8am–11pm) with Sendblue and Twilio mocked, and asserts the exact transcript of what went out and when — for its 18:00 habit, `18:00 text`, `19:20 text`, `20:40 text`, `20:50 call`, `21:00 call`, `21:10 call`, `21:40 partner text`.
@@ -267,6 +337,12 @@ The Twilio mock is a knob for what the *called party* did (`reached`/`missed`/`p
 All three escape hatches are pinned there: replying at all must remove everything remaining including the partner alert, answering the phone must remove the remaining calls and the partner alert, and replaying the same tick ten times must send exactly once.
 `nudge-inbound` covers the webhook itself — that the secret gate rejects unverified requests without recording anything, that every shape of reply (a habit name, a bare number, an unmatched "ok") ends the day while an empty message doesn't, and that the confirmation states the full effect.
 A `pending` outcome must not consume an attempt — otherwise a slow-to-connect call would silently eat the retries meant to follow it.
+
+`batching` is the regression guard on the work described in [Latency instrumentation](#latency-instrumentation).
+It asserts that `getGoalStatuses` doesn't scale its round trips with the habit count, that `settings:vacation` is read exactly once, that the history-length and target-history fan-outs each go out as one pipeline, that a 40-day streak costs under ten commands rather than 41, and that the check-in keys the history grid reads are never re-read by the streak walk.
+The bounds are deliberately a little loose - they exist to catch a fan-out being reintroduced, not to pin a number a benign refactor would have to churn - but not vacuous: the real figures are 16 commands for 12 habits (against a bound of 25) and 7 for a 40-day streak (against 10).
+Two correctness tests sit alongside them, because a read cache's failure modes are staleness: a check-in written earlier in the same request must be visible to a later read, and nothing may leak between requests.
+**Every test in it opens a scope with `runWithCache`**, because that's what a real request does — `withPerf` wraps every route handler and `measure` wraps the server components. Without a scope the cache is a passthrough and the counts would be the un-deduped ones, so a test that forgets it measures the wrong thing.
 
 `scripts/seed-reflection-demo.mts` is *not* a test — it seeds a disposable `reflectdemo` user against live Redis for manual browser QA of the modals and trophy shelf, which unit tests can't cover. `npx tsx --env-file=.env.local scripts/seed-reflection-demo.mts [clean]`.
 

@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import { getUsers, addUser, removeUser, setUserPhone, setUserPartnerPhone } from "@/lib/kv";
 
-export async function GET() {
+async function GETHandler() {
   return NextResponse.json(await getUsers());
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   const { id, label, checkinTopic, phone } = await req.json();
   if (!id || !label) {
     return NextResponse.json({ error: "id and label required" }, { status: 400 });
@@ -14,7 +15,7 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true });
 }
 
-export async function PATCH(req: Request) {
+async function PATCHHandler(req: Request) {
   const { id, phone, partnerPhone } = await req.json();
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   // Each number is only touched when its key is present, so editing one can't blank the other.
@@ -23,9 +24,14 @@ export async function PATCH(req: Request) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(req: Request) {
+async function DELETEHandler(req: Request) {
   const { id } = await req.json();
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await removeUser(id);
   return NextResponse.json({ ok: true });
 }
+
+export const GET = withPerf("GET /api/users", GETHandler);
+export const POST = withPerf("POST /api/users", POSTHandler);
+export const PATCH = withPerf("PATCH /api/users", PATCHHandler);
+export const DELETE = withPerf("DELETE /api/users", DELETEHandler);

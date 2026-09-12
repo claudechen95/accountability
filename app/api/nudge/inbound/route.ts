@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import {
   findUserByPhone,
   setNudgeSnoozed,
@@ -38,7 +39,7 @@ function matchesHabit(reply: string, habitName: string): boolean {
   return Array.from(words(habitName)).some((w) => replyWords.has(w));
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "invalid body" }, { status: 400 });
 
@@ -109,3 +110,5 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true });
 }
+
+export const POST = withPerf("POST /api/nudge/inbound", POSTHandler);

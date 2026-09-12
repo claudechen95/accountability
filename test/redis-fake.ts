@@ -11,7 +11,21 @@ export class FakeRedis {
   private store = new Map<string, unknown>();
   private lists = new Map<string, string[]>();
 
+  /**
+   * Every command issued since the last `reset()`, in order, as `"<command> <keys>"`.
+   *
+   * Round-trip *count* is what decides how slow a request feels against Upstash's REST API, and
+   * it's a property no assertion on returned data can catch - an N+1 gives exactly the right
+   * answer, slowly. So the fake records it and `batching.test.ts` asserts on it.
+   */
+  readonly calls: string[] = [];
+
+  private note(command: string, ...keys: string[]): void {
+    this.calls.push(keys.length > 0 ? `${command} ${keys.join(",")}` : command);
+  }
+
   async get<T>(key: string): Promise<T | null> {
+    this.note("get", key);
     return (this.store.get(key) as T) ?? null;
   }
 
@@ -21,30 +35,35 @@ export class FakeRedis {
   // runs long enough for a TTL to matter, and faking expiry would need a clock the fake doesn't
   // have.
   async set(key: string, value: unknown, opts?: { nx?: boolean; ex?: number }): Promise<"OK" | null> {
+    this.note("set", key);
     if (opts?.nx && (this.store.has(key) || this.lists.has(key))) return null;
     this.store.set(key, value);
     return "OK";
   }
 
   async mget<T>(...keys: string[]): Promise<(T | null)[]> {
+    this.note("mget", ...(keys.flat() as string[]));
     // The real client accepts either mget(a, b) or mget([a, b]).
     const flat = keys.flat() as string[];
     return flat.map((key) => (this.store.get(key) as T) ?? null);
   }
 
   async incr(key: string): Promise<number> {
+    this.note("incr", key);
     const next = Number(this.store.get(key) ?? 0) + 1;
     this.store.set(key, next);
     return next;
   }
 
   async decr(key: string): Promise<number> {
+    this.note("decr", key);
     const next = Number(this.store.get(key) ?? 0) - 1;
     this.store.set(key, next);
     return next;
   }
 
   async del(...keys: string[]): Promise<number> {
+    this.note("del");
     const flat = keys.flat() as string[];
     let removed = 0;
     for (const key of flat) {
@@ -55,16 +74,19 @@ export class FakeRedis {
   }
 
   async keys(pattern: string): Promise<string[]> {
+    this.note("keys", pattern);
     const regex = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
     const all = Array.from(this.store.keys()).concat(Array.from(this.lists.keys()));
     return all.filter((key) => regex.test(key));
   }
 
   async llen(key: string): Promise<number> {
+    this.note("llen", key);
     return this.lists.get(key)?.length ?? 0;
   }
 
   async lpush(key: string, ...values: string[]): Promise<number> {
+    this.note("lpush");
     const list = this.lists.get(key) ?? [];
     list.unshift(...values);
     this.lists.set(key, list);
@@ -72,6 +94,7 @@ export class FakeRedis {
   }
 
   async rpush(key: string, ...values: string[]): Promise<number> {
+    this.note("rpush");
     const list = this.lists.get(key) ?? [];
     list.push(...values);
     this.lists.set(key, list);
@@ -79,6 +102,7 @@ export class FakeRedis {
   }
 
   async lrange<T>(key: string, start: number, stop: number): Promise<T[]> {
+    this.note("lrange", key);
     const list = this.lists.get(key) ?? [];
     // Redis `stop` is inclusive and -1 means "to the end".
     const end = stop < 0 ? list.length + stop + 1 : stop + 1;
@@ -92,6 +116,7 @@ export class FakeRedis {
   }
 
   async lrem(key: string, count: number, value: string): Promise<number> {
+    this.note("lrem");
     const list = this.lists.get(key) ?? [];
     let removed = 0;
     const limit = count === 0 ? Infinity : Math.abs(count);
@@ -106,10 +131,29 @@ export class FakeRedis {
     return removed;
   }
 
+  /**
+   * Upstash pipelines queue commands and send them on `exec()`, which returns their results in
+   * order. `lib/kv.ts` uses this to collapse a per-goal `llen` fan-out and a per-day `lrange`
+   * fan-out into one round trip each, so the fake has to model the queue-then-exec shape rather
+   * than just forwarding calls - otherwise those batches would run eagerly and the test would
+   * pass for the wrong reason.
+   */
+  pipeline(): FakePipeline {
+    return new FakePipeline(this);
+  }
+
   /** Wipe everything between tests. */
   reset(): void {
     this.store.clear();
     this.lists.clear();
+    this.calls.length = 0;
+  }
+
+  /** Count the commands issued while `fn` ran, with pipelines counted as the one trip they are. */
+  async countCommands(fn: () => Promise<unknown>): Promise<number> {
+    const before = this.calls.length;
+    await fn();
+    return this.calls.length - before;
   }
 
   /** Seed a raw value, for arranging test state without going through kv.ts. */
@@ -122,6 +166,48 @@ export class FakeRedis {
     const list = this.lists.get(key) ?? [];
     list.unshift(JSON.stringify(value));
     this.lists.set(key, list);
+  }
+}
+
+/** The queued half of `FakeRedis.pipeline()`. Only the commands kv.ts actually batches. */
+class FakePipeline {
+  private queued: (() => Promise<unknown>)[] = [];
+
+  constructor(private readonly redis: FakeRedis) {}
+
+  llen(key: string): this {
+    this.queued.push(() => this.redis.llen(key));
+    return this;
+  }
+
+  lrange(key: string, start: number, stop: number): this {
+    this.queued.push(() => this.redis.lrange(key, start, stop));
+    return this;
+  }
+
+  get(key: string): this {
+    this.queued.push(() => this.redis.get(key));
+    return this;
+  }
+
+  /**
+   * Results in the order the commands were queued, exactly as Upstash returns them.
+   *
+   * The queued commands run through the same methods as everything else, so their individual
+   * `note` calls are rolled back and replaced with one - a pipeline is one round trip, and a
+   * command count that said otherwise would make batching look like no improvement.
+   */
+  async exec(): Promise<unknown[]> {
+    const before = this.redis.calls.length;
+    const results = [];
+    for (const run of this.queued) results.push(await run());
+    this.queued = [];
+    // Roll the individual notes into one, keeping their keys so a test can still assert *what*
+    // was batched and not just how many commands went out.
+    const batched = this.redis.calls.slice(before).map((c) => c.slice(c.indexOf(" ") + 1));
+    this.redis.calls.length = before;
+    this.redis.calls.push(`pipeline(${results.length}) ${batched.join(",")}`);
+    return results;
   }
 }
 

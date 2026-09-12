@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import type { JournalEntry } from "@/lib/kv";
+import { timedFetch } from "@/lib/client-perf";
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -69,7 +70,7 @@ export function ReflectionsPage({ userId }: { userId?: string }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetch(`/api/journal${q}`);
+    const res = await timedFetch(`/api/journal${q}`);
     if (res.ok) setEntries(await res.json());
     setLoading(false);
   }, [q]);
@@ -77,7 +78,7 @@ export function ReflectionsPage({ userId }: { userId?: string }) {
   useEffect(() => { load(); }, [load]);
 
   const handleSave = async (text: string) => {
-    await fetch(`/api/journal${q}`, {
+    await timedFetch(`/api/journal${q}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
@@ -87,7 +88,7 @@ export function ReflectionsPage({ userId }: { userId?: string }) {
   };
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/journal${q}`, {
+    await timedFetch(`/api/journal${q}`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),

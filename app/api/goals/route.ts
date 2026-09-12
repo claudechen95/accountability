@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import {
   getGoals,
   saveGoals,
@@ -11,7 +12,7 @@ import {
   snoozeGraduation,
 } from "@/lib/kv";
 
-export async function GET(req: Request) {
+async function GETHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const statuses = await getGoalStatuses(user);
@@ -22,7 +23,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const body = await req.json();
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
   }
 }
 
-export async function PATCH(req: Request) {
+async function PATCHHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { orderedIds, goalId, graduation } = await req.json();
@@ -78,7 +79,7 @@ export async function PATCH(req: Request) {
   }
 }
 
-export async function DELETE(req: Request) {
+async function DELETEHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { id } = await req.json();
@@ -92,3 +93,8 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Failed to delete goal" }, { status: 500 });
   }
 }
+
+export const GET = withPerf("GET /api/goals", GETHandler);
+export const POST = withPerf("POST /api/goals", POSTHandler);
+export const PATCH = withPerf("PATCH /api/goals", PATCHHandler);
+export const DELETE = withPerf("DELETE /api/goals", DELETEHandler);

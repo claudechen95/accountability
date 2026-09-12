@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import { addMoodEntry, getMoodEntries, getAllMoodEntries, deleteMoodEntry, getTodayDate, resolveUser } from "@/lib/kv";
 
-export async function GET(req: Request) {
+async function GETHandler(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const date = searchParams.get("date");
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { emoji, text } = await req.json();
@@ -33,7 +34,7 @@ export async function POST(req: Request) {
   }
 }
 
-export async function DELETE(req: Request) {
+async function DELETEHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { id, date } = await req.json();
@@ -47,3 +48,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Failed to delete mood entry" }, { status: 500 });
   }
 }
+
+export const GET = withPerf("GET /api/mood", GETHandler);
+export const POST = withPerf("POST /api/mood", POSTHandler);
+export const DELETE = withPerf("DELETE /api/mood", DELETEHandler);

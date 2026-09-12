@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import { addCoachMessage, getCoachMessages, resolveUser } from "@/lib/kv";
 import { streamCoachReply, type ChatAttachment } from "@/lib/coach";
 import { searchTranscripts } from "@/lib/vector";
@@ -42,7 +43,7 @@ function processAttachments(raw: RawAttachment[]): { appendedText: string; chatA
   return { appendedText, chatAttachments };
 }
 
-export async function GET(req: Request) {
+async function GETHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const messages = await getCoachMessages(user);
@@ -53,7 +54,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { message, attachments } = await req.json();
@@ -100,3 +101,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Failed to send message" }, { status: 500 });
   }
 }
+
+export const GET = withPerf("GET /api/coach", GETHandler);
+export const POST = withPerf("POST /api/coach", POSTHandler);

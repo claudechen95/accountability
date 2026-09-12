@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import {
   getWeeklyNote,
   getAllWeeklyNotes,
@@ -10,7 +11,7 @@ import {
 } from "@/lib/kv";
 
 // Get all notes or a specific week
-export async function GET(req: Request) {
+async function GETHandler(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const week = searchParams.get("week");
@@ -39,7 +40,7 @@ export async function GET(req: Request) {
 }
 
 // Create or update a note
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const body = await req.json();
@@ -75,7 +76,7 @@ export async function POST(req: Request) {
 }
 
 // Delete a note
-export async function DELETE(req: Request) {
+async function DELETEHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { week } = await req.json();
@@ -91,3 +92,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Failed to delete note" }, { status: 500 });
   }
 }
+
+export const GET = withPerf("GET /api/notes", GETHandler);
+export const POST = withPerf("POST /api/notes", POSTHandler);
+export const DELETE = withPerf("DELETE /api/notes", DELETEHandler);

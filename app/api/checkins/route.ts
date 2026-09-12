@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import { addCheckIn, undoCheckIn, getGoals, resolveUser, getNtfyTopic, GraduatedGoalError } from "@/lib/kv";
 
 async function sendNotification(goalId: string, userId?: string) {
@@ -25,7 +26,7 @@ async function sendNotification(goalId: string, userId?: string) {
   }
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { goalId, date } = await req.json();
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
   }
 }
 
-export async function DELETE(req: Request) {
+async function DELETEHandler(req: Request) {
   try {
     const user = resolveUser(new URL(req.url).searchParams.get("user"));
     const { goalId } = await req.json();
@@ -53,3 +54,6 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Failed to undo check-in" }, { status: 500 });
   }
 }
+
+export const POST = withPerf("POST /api/checkins", POSTHandler);
+export const DELETE = withPerf("DELETE /api/checkins", DELETEHandler);

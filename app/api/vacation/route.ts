@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPerf } from "@/lib/perf";
 import {
   getActiveVacation,
   getUpcomingVacation,
@@ -11,13 +12,13 @@ import {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-export async function GET(req: Request) {
+async function GETHandler(req: Request) {
   const user = resolveUser(new URL(req.url).searchParams.get("user"));
   const [active, upcoming] = await Promise.all([getActiveVacation(user), getUpcomingVacation(user)]);
   return NextResponse.json({ active, upcoming });
 }
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
   const user = resolveUser(new URL(req.url).searchParams.get("user"));
   const { startDate, endDate, goalIds } = await req.json();
   const today = getTodayDate();
@@ -40,8 +41,12 @@ export async function POST(req: Request) {
   return NextResponse.json({ active, upcoming, window });
 }
 
-export async function DELETE(req: Request) {
+async function DELETEHandler(req: Request) {
   const user = resolveUser(new URL(req.url).searchParams.get("user"));
   await endVacationNow(user);
   return NextResponse.json({ ok: true });
 }
+
+export const GET = withPerf("GET /api/vacation", GETHandler);
+export const POST = withPerf("POST /api/vacation", POSTHandler);
+export const DELETE = withPerf("DELETE /api/vacation", DELETEHandler);

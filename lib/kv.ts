@@ -1,12 +1,18 @@
 import { Redis } from "@upstash/redis";
-
-const kv = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-  cache: "no-store",
-});
 import type { Goal, GoalStatus, CheckInRecord, WeeklyNote, MoodEntry, ReflectionPrompt, TargetChange } from "./types";
 import { sameTarget } from "./target-history";
+import { instrumentRedis, span } from "./perf";
+import { cached, peek, prime, invalidate } from "./request-cache";
+
+// Every command is its own HTTPS round trip to Upstash, so command *count* is the thing that
+// decides how slow a request feels. `instrumentRedis` counts them per request - see lib/perf.ts.
+const kv = instrumentRedis(
+  new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL!,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+    cache: "no-store",
+  })
+);
 
 // Normalize the ?user= param: "alan" and empty both map to undefined (un-prefixed namespace).
 // Call this in every API route when reading the user query param.
@@ -74,8 +80,12 @@ function isVacationDay(dateStr: string, windows: VacationWindow[], goalId: strin
   return windows.some((w) => w.goalIds.includes(goalId) && w.startDate <= dateStr && dateStr <= w.endDate);
 }
 
+// Read 26 times in one `GET /api/goals` before the cache existed - once per goal by each of
+// getDailyStreak, getWeeklyStreak and getReflectionPrompt. It's one small key that cannot change
+// mid-request, so it's the clearest case there is for reading it once.
 async function getVacationWindows(userId?: string): Promise<VacationWindow[]> {
-  const stored = await kv.get<VacationWindow[]>(k(userId, "settings:vacation"));
+  const key = k(userId, "settings:vacation");
+  const stored = await cached(key, () => kv.get<VacationWindow[]>(key));
   return stored ?? [];
 }
 
@@ -101,6 +111,7 @@ export async function startVacation(startDate: string, endDate: string, goalIds:
   const window: VacationWindow = { startDate, endDate, goalIds };
   past.push(window);
   await kv.set(k(userId, "settings:vacation"), past);
+  invalidate(k(userId, "settings:vacation"));
   return window;
 }
 
@@ -114,12 +125,14 @@ export async function endVacationNow(userId?: string): Promise<void> {
     // Days already spent on vacation stay tagged vacation; today onward behaves normally again.
     windows[idx] = { ...windows[idx], endDate: addDaysToDateStr(today, -1) };
     await kv.set(k(userId, "settings:vacation"), windows.filter((w) => w.startDate <= w.endDate));
+    invalidate(k(userId, "settings:vacation"));
     return;
   }
   const upcomingIdx = windows.findIndex((w) => w.startDate > today);
   if (upcomingIdx !== -1) {
     windows.splice(upcomingIdx, 1);
     await kv.set(k(userId, "settings:vacation"), windows);
+    invalidate(k(userId, "settings:vacation"));
   }
 }
 
@@ -356,17 +369,55 @@ function getWeekDatesForDate(dateStr: string): string[] {
   });
 }
 
+/**
+ * The one way check-in counts are read. Every caller - the current period, a streak walk, the
+ * 91-day history grid - goes through here, which is what makes the request cache effective:
+ * whichever caller asks first pays for the round trip and the rest are free.
+ *
+ * One `mget` for whatever isn't cached, and nothing at all when it all is. Returns counts keyed
+ * by date (not by Redis key), since that's what every caller actually wants.
+ */
+async function readCheckins(goalId: string, dates: string[], userId?: string): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  const missing: string[] = [];
+
+  await Promise.all(
+    dates.map(async (date) => {
+      const hit = peek<number | null>(k(userId, `checkin:${goalId}:${date}`));
+      if (hit) counts.set(date, (await hit) ?? 0);
+      else missing.push(date);
+    })
+  );
+
+  if (missing.length > 0) {
+    const keys = missing.map((d) => k(userId, `checkin:${goalId}:${d}`));
+    const fetched = await kv.mget<(number | null)[]>(...keys);
+    missing.forEach((date, i) => {
+      const value = fetched[i] ?? null;
+      prime(keys[i], value);
+      counts.set(date, value ?? 0);
+    });
+  }
+
+  return counts;
+}
+
+/** A single date's count, read through the same batch/cache path as everything else. */
+async function readCheckin(goalId: string, date: string, userId?: string): Promise<number> {
+  return (await readCheckins(goalId, [date], userId)).get(date) ?? 0;
+}
+
 // Count how many days in the given week had ≥1 check-in.
 // Falls back to the legacy weekly key (checkin:{id}:{YYYY-WXX}) for data recorded before the
 // switch to daily storage, counting it as 1 day if the weekly key has ≥1 check-in.
 async function getWeeklyDaysCompleted(goalId: string, weekDates: string[], userId?: string): Promise<number> {
-  const counts = await kv.mget<number[]>(...weekDates.map((d) => k(userId, `checkin:${goalId}:${d}`)));
-  const fromDaily = counts.filter((c) => (c ?? 0) >= 1).length;
+  const counts = await readCheckins(goalId, weekDates, userId);
+  const fromDaily = weekDates.filter((d) => (counts.get(d) ?? 0) >= 1).length;
   if (fromDaily > 0) return fromDaily;
 
   // Legacy fallback: weekly key stored before per-day tracking, under the old week numbering.
   const legacyKey = k(userId, `checkin:${goalId}:${legacyWeekKey(weekDates[0])}`);
-  const legacy = await kv.get<number>(legacyKey);
+  const legacy = await cached(legacyKey, () => kv.get<number>(legacyKey));
   return (legacy ?? 0) >= 1 ? 1 : 0;
 }
 
@@ -388,6 +439,10 @@ export function renumberGoals(goals: Goal[]): void {
 
 // --- Goals ---
 export async function getGoals(userId?: string): Promise<Goal[]> {
+  return span("getGoals", () => loadGoals(userId));
+}
+
+async function loadGoals(userId?: string): Promise<Goal[]> {
   let goals = await kv.get<Goal[]>(k(userId, "goals"));
   if (!goals) {
     // Only seed Alan's default goals for his namespace; other users start empty
@@ -454,8 +509,46 @@ export async function saveGoals(goals: Goal[], userId?: string): Promise<void> {
   await kv.set(k(userId, "goals"), goals);
 }
 
+/**
+ * Whether each goal has ever been checked in, for every goal in one round trip.
+ *
+ * `getReflectionPrompt` needs this per goal, which was 13 separate `llen`s - the second largest
+ * block of round trips in `GET /api/goals` once the duplicate reads were gone. Priming the cache
+ * up front means the per-goal calls read it for free, and nothing about `getReflectionPrompt`
+ * had to learn it's being called in a batch.
+ */
+async function primeHistoryLengths(goals: Goal[], userId?: string): Promise<void> {
+  const keys = goals.filter((g) => !isGraduated(g)).map((g) => k(userId, `history:${g.id}`));
+  if (keys.length <= 1) return; // a single `llen` is cheaper than a pipeline round trip
+  const pipeline = kv.pipeline();
+  for (const key of keys) pipeline.llen(key);
+  const lengths = (await pipeline.exec()) as number[];
+  keys.forEach((key, i) => prime(key, lengths[i] ?? 0));
+}
+
+/**
+ * Every goal's current week, in one `mget`, before the per-goal work starts.
+ *
+ * `getCompletedThisPeriod`, `getCheckInsForPeriod` and the first block of the streak walk all
+ * want these keys, and they run inside one `Promise.all` - so they ask concurrently, all miss the
+ * cache, and each issues its own read. Priming first turns those into cache hits. This is the
+ * one place that has to know the fan-out is happening; everything downstream stays unaware.
+ */
+async function primeCurrentPeriod(goals: Goal[], userId?: string): Promise<void> {
+  const tracked = goals.filter((g) => !isGraduated(g));
+  if (tracked.length === 0) return;
+  const thisWeek = getWeekDatesForDate(getTodayDate());
+  const keys = tracked.flatMap((g) => thisWeek.map((d) => k(userId, `checkin:${g.id}:${d}`)));
+  const values = await kv.mget<(number | null)[]>(...keys);
+  keys.forEach((key, i) => prime(key, values[i] ?? null));
+}
+
 export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
-  const goals = await getGoals(userId);
+  // The vacation key doesn't depend on the goals list, so it rides in the same wave rather than
+  // waiting for one. Its readers are the streak walks two waves later, and the request cache
+  // hands them this promise.
+  const [goals] = await Promise.all([getGoals(userId), getVacationWindows(userId)]);
+  await Promise.all([primeHistoryLengths(goals, userId), primeCurrentPeriod(goals, userId)]);
   return Promise.all(
     goals.map(async (goal) => {
       // A graduated habit isn't tracked any more, so there's nothing to recompute - its run was
@@ -475,10 +568,10 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
       }
 
       const [completed, streak, todayCount, reflection] = await Promise.all([
-        getCompletedThisPeriod(goal, userId),
-        getStreak(goal, userId),
-        getCheckInsForPeriod(goal.id, getTodayDate(), userId),
-        getReflectionPrompt(goal, userId),
+        span("completedThisPeriod", () => getCompletedThisPeriod(goal, userId)),
+        span("streak", () => getStreak(goal, userId)),
+        span("todayCount", () => getCheckInsForPeriod(goal.id, getTodayDate(), userId)),
+        span("reflectionPrompt", () => getReflectionPrompt(goal, userId)),
       ]);
       return {
         ...goal,
@@ -498,10 +591,32 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
 // read only for display: nothing here feeds getHistory, the streaks or graduation, all of which
 // still score every past period against the habit's current target.
 
-export async function getTargetHistory(goalId: string, userId?: string): Promise<TargetChange[]> {
-  const raw = await kv.lrange<string | TargetChange>(k(userId, `target-history:${goalId}`), 0, -1);
+function sortTargetChanges(raw: (string | TargetChange)[]): TargetChange[] {
   const changes = raw.map((entry) => (typeof entry === "string" ? (JSON.parse(entry) as TargetChange) : entry));
   return changes.sort((a, b) => (a.date === b.date ? a.at - b.at : a.date < b.date ? -1 : 1));
+}
+
+export async function getTargetHistory(goalId: string, userId?: string): Promise<TargetChange[]> {
+  const key = k(userId, `target-history:${goalId}`);
+  const raw = await span("targetHistory", () =>
+    cached(key, () => kv.lrange<string | TargetChange>(key, 0, -1))
+  );
+  return sortTargetChanges(raw);
+}
+
+/**
+ * Every goal's target history in one round trip, for the history page which draws all of them.
+ *
+ * These are lists, so `mget` can't batch them - a pipeline can. Thirteen separate `lrange`s was
+ * the last unbatched fan-out in `GET /api/history`.
+ */
+export async function primeTargetHistories(goals: Goal[], userId?: string): Promise<void> {
+  if (goals.length <= 1) return; // one `lrange` is cheaper than a pipeline round trip
+  const keys = goals.map((g) => k(userId, `target-history:${g.id}`));
+  const pipeline = kv.pipeline();
+  for (const key of keys) pipeline.lrange(key, 0, -1);
+  const lists = (await pipeline.exec()) as (string | TargetChange)[][];
+  keys.forEach((key, i) => prime(key, lists[i] ?? []));
 }
 
 async function appendTargetChange(
@@ -559,8 +674,7 @@ export async function getCheckInsForPeriod(
   period: string,
   userId?: string
 ): Promise<number> {
-  const count = await kv.get<number>(k(userId, `checkin:${goalId}:${period}`));
-  return count ?? 0;
+  return readCheckin(goalId, period, userId);
 }
 
 export async function addCheckIn(goalId: string, date?: string, userId?: string): Promise<{ count: number }> {
@@ -573,7 +687,9 @@ export async function addCheckIn(goalId: string, date?: string, userId?: string)
   if (isGraduated(goal)) throw new GraduatedGoalError(goalId);
 
   const targetDate = date || getTodayDate();
-  const newCount = await kv.incr(k(userId, `checkin:${goalId}:${targetDate}`));
+  const checkinKey = k(userId, `checkin:${goalId}:${targetDate}`);
+  const newCount = await kv.incr(checkinKey);
+  invalidate(checkinKey, k(userId, `history:${goalId}`));
 
   const record: CheckInRecord = {
     goalId,
@@ -593,10 +709,11 @@ export async function undoCheckIn(goalId: string, userId?: string): Promise<{ co
 
   const today = getTodayDate();
   const key = k(userId, `checkin:${goalId}:${today}`);
-  const current = (await kv.get<number>(key)) ?? 0;
+  const current = await readCheckin(goalId, today, userId);
   if (current <= 0) return { count: 0 };
 
   const newCount = await kv.decr(key);
+  invalidate(key);
   return { count: Math.max(0, newCount) };
 }
 
@@ -606,8 +723,12 @@ export async function getHistory(
   periods: number,
   userId?: string
 ): Promise<{ period: string; count: number; done: boolean; vacation: boolean; graduated: boolean }[]> {
-  const todayPST = getTodayDate();
-  const [ty, tm, td] = todayPST.split("-").map(Number);
+  return span("history.grid", () => buildHistory(goal, periods, userId));
+}
+
+/** The grid's date labels, oldest first. Shared with the priming pass so they can't diverge. */
+function historyLabels(periods: number): string[] {
+  const [ty, tm, td] = getTodayDate().split("-").map(Number);
   const labels: string[] = [];
   for (let i = periods - 1; i >= 0; i--) {
     const utcDate = new Date(Date.UTC(ty, tm - 1, td - i));
@@ -617,14 +738,22 @@ export async function getHistory(
       String(utcDate.getUTCDate()).padStart(2, "0"),
     ].join("-"));
   }
+  return labels;
+}
 
-  const keys = labels.map((label) => k(userId, `checkin:${goal.id}:${label}`));
+async function buildHistory(
+  goal: Goal,
+  periods: number,
+  userId?: string
+): Promise<{ period: string; count: number; done: boolean; vacation: boolean; graduated: boolean }[]> {
+  const labels = historyLabels(periods);
+
   const [counts, vacationWindows] = await Promise.all([
-    kv.mget<number[]>(...keys),
+    readCheckins(goal.id, labels, userId),
     getVacationWindows(userId),
   ]);
-  return labels.map((period, i) => {
-    const count = counts[i] ?? 0;
+  return labels.map((period) => {
+    const count = counts.get(period) ?? 0;
     const done = goal.frequency === "daily" ? count >= goal.targetCount : count >= 1;
     return {
       period,
@@ -638,32 +767,105 @@ export async function getHistory(
   });
 }
 
+/** One habit's entry in the history page's payload. */
+export interface GoalHistory {
+  goal: Goal;
+  entries: Awaited<ReturnType<typeof getHistory>>;
+  streak: number;
+  reflections: Record<string, string>;
+  targetHistory: TargetChange[];
+}
+
+/** How many days the history grid shows. */
+export const HISTORY_PERIODS = 91;
+
+/**
+ * The whole history page in one call, so `GET /api/history` and the server-rendered page can't
+ * drift apart. `primeTargetHistories` runs first so the per-goal loop below reads all of them
+ * from the request cache rather than issuing an `lrange` each.
+ */
+export async function getGoalHistories(userId?: string): Promise<GoalHistory[]> {
+  // Vacation windows in the first wave, for the same reason as getGoalStatuses.
+  const [goals] = await Promise.all([getGoals(userId), getVacationWindows(userId)]);
+
+  // The grid's 91 days per goal is a superset of what the streak walks want, so fetch it all
+  // first and every streak walk below becomes a cache hit. Without this the two race - they sit
+  // in the same `Promise.all` - and both miss, costing an extra read per goal. It used to come
+  // out right by accident, because the streak walk happened to block on an uncached vacation
+  // read for exactly long enough; batching.test.ts caught that the moment vacation got faster.
+  const labels = historyLabels(HISTORY_PERIODS);
+  await Promise.all([
+    primeTargetHistories(goals, userId),
+    ...goals.map((g) => readCheckins(g.id, labels, userId)),
+  ]);
+
+  return Promise.all(
+    goals.map(async (goal) => {
+      // A graduated habit stopped being tracked, so recomputing its streak would just show it
+      // decaying toward zero. Report the run frozen at graduation instead.
+      const [entries, streak, targetHistory] = await Promise.all([
+        getHistory(goal, HISTORY_PERIODS, userId),
+        goal.graduatedAt ? Promise.resolve(goal.graduatedRun ?? 0) : getStreak(goal, userId),
+        getTargetHistory(goal.id, userId),
+      ]);
+
+      // Reflections are now stored by date key for all goal types
+      const reflections = await getReflectionsForGoal(goal.id, entries.map((e) => e.period), userId);
+
+      return { goal, entries, streak, reflections, targetHistory };
+    })
+  );
+}
+
 // --- Streak calculation ---
 export async function getStreak(goal: Goal, userId?: string): Promise<number> {
   if (goal.frequency === "daily") {
-    return getDailyStreak(goal, userId);
+    return span("streak.daily", () => getDailyStreak(goal, userId));
   }
-  return getWeeklyStreak(goal, userId);
+  return span("streak.weekly", () => getWeeklyStreak(goal, userId));
 }
+
+/**
+ * How far back a streak walk reads per round trip, as a sequence of growing blocks.
+ *
+ * The walk used to `await` one `get` per day inside the loop, so its cost scaled with the streak
+ * it was measuring: a 100-day streak meant 100 serialized round trips, which at a realistic
+ * 30ms RTT is three seconds for one habit. A block is fetched only if the previous one ran out
+ * with the streak still alive, so the walk still stops as soon as the streak breaks.
+ *
+ * The sizes **grow** rather than being one fixed width, because `mget` is not free per key: a
+ * flat 60-day block measured 45ms against 12ms for a small one, and 13 goals each pulling 60-80
+ * keys cost more in payload than the round trips it saved - the first attempt at this fix was
+ * a wash for exactly that reason. Growing means the common case (a streak of a few days) pays
+ * one small read, while a year-long streak still finishes in five round trips instead of 365.
+ *
+ * Each list sums to the full walk: 365 days, 52 weeks.
+ */
+const STREAK_DAY_BLOCKS = [14, 28, 56, 112, 155];
+const STREAK_WEEK_BLOCKS = [4, 8, 16, 24];
 
 async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
   let streak = 0;
-  const today = new Date();
+  const today = getTodayDate();
   const vacationWindows = await getVacationWindows(userId);
 
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(d);
-    const count = await kv.get<number>(k(userId, `checkin:${goal.id}:${dateKey}`));
-    if ((count ?? 0) >= goal.targetCount) {
-      streak++;
-    } else if (isVacationDay(dateKey, vacationWindows, goal.id)) {
-      continue; // neutral — doesn't break, doesn't count
-    } else {
-      // Don't break on today if not yet checked in
-      if (i > 0) break;
+  let start = 0;
+  outer: for (const width of STREAK_DAY_BLOCKS) {
+    const block = Array.from({ length: width }, (_, j) => addDaysToDateStr(today, -(start + j)));
+    const counts = await readCheckins(goal.id, block, userId);
+
+    for (let j = 0; j < block.length; j++) {
+      const dateKey = block[j];
+      if ((counts.get(dateKey) ?? 0) >= goal.targetCount) {
+        streak++;
+      } else if (isVacationDay(dateKey, vacationWindows, goal.id)) {
+        continue; // neutral — doesn't break, doesn't count
+      } else {
+        // Don't break on today if not yet checked in
+        if (start + j > 0) break outer;
+      }
     }
+    start += width;
   }
   // Add any streak days preserved from a prior frequency change
   if (streak > 0 && goal.streakOffset) {
@@ -677,23 +879,32 @@ async function getWeeklyStreak(goal: Goal, userId?: string): Promise<number> {
   const todayStr = getTodayDate();
   const vacationWindows = await getVacationWindows(userId);
 
-  for (let i = 0; i < 52; i++) {
-    const [y, m, d] = todayStr.split("-").map(Number);
-    const ref = new Date(Date.UTC(y, m - 1, d - i * 7, 12));
-    const refStr = [
-      ref.getUTCFullYear(),
-      String(ref.getUTCMonth() + 1).padStart(2, "0"),
-      String(ref.getUTCDate()).padStart(2, "0"),
-    ].join("-");
-    const weekDates = getWeekDatesForDate(refStr);
-    const daysCompleted = await getWeeklyDaysCompleted(goal.id, weekDates, userId);
-    if (daysCompleted >= goal.targetCount) {
-      streak++;
-    } else if (weekDates.some((wd) => isVacationDay(wd, vacationWindows, goal.id))) {
-      continue;
-    } else {
-      if (i > 0) break;
+  // Same block strategy as the daily walk: pull a block of weeks' worth of days in one read,
+  // then judge each week from the cache. Ten weeks is 70 date keys - still one `mget`.
+  let start = 0;
+  outer: for (const width of STREAK_WEEK_BLOCKS) {
+    const weeks = Array.from({ length: width }, (_, j) =>
+      getWeekDatesForDate(addDaysToDateStr(todayStr, -(start + j) * 7))
+    );
+    // The legacy weekly keys ride along in the same read. They live under the same
+    // `checkin:{goalId}:{suffix}` shape, so they batch with the dates rather than costing a
+    // sequential `get` each for every week that has no daily check-ins.
+    await readCheckins(goal.id, [...weeks.flat(), ...weeks.map((w) => legacyWeekKey(w[0]))], userId);
+
+    for (let j = 0; j < weeks.length; j++) {
+      const weekDates = weeks[j];
+      // Reads through the cache the block above just filled, so this costs no round trip -
+      // except for the legacy weekly-key fallback, which only fires for a week with no days.
+      const daysCompleted = await getWeeklyDaysCompleted(goal.id, weekDates, userId);
+      if (daysCompleted >= goal.targetCount) {
+        streak++;
+      } else if (weekDates.some((wd) => isVacationDay(wd, vacationWindows, goal.id))) {
+        continue;
+      } else {
+        if (start + j > 0) break outer;
+      }
     }
+    start += width;
   }
   return streak;
 }
@@ -816,7 +1027,10 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   // A graduated habit has no expectations attached to it any more, so it can't be behind on one.
   if (isGraduated(goal)) return null;
 
-  const hasHistory = (await kv.llen(k(userId, `history:${goal.id}`))) > 0;
+  // Primed in one pipeline by getGoalStatuses when this runs for every goal at once; a lone
+  // caller still pays a single `llen`.
+  const historyKey = k(userId, `history:${goal.id}`);
+  const hasHistory = (await cached(historyKey, () => kv.llen(historyKey))) > 0;
   if (!hasHistory) return null;
 
   const vacationWindows = await getVacationWindows(userId);
@@ -860,8 +1074,8 @@ export async function getReflectionsForGoal(
   userId?: string
 ): Promise<Record<string, string>> {
   if (periodKeys.length === 0) return {};
-  const values = (await kv.mget(
-    ...periodKeys.map((pk) => k(userId, `reflection:${goalId}:${pk}`))
+  const values = (await span("reflections.mget", () =>
+    kv.mget(...periodKeys.map((pk) => k(userId, `reflection:${goalId}:${pk}`)))
   )) as ({ text: string; savedAt: number } | null)[];
   const result: Record<string, string> = {};
   periodKeys.forEach((pk, i) => {
@@ -914,13 +1128,11 @@ export async function getWeeklyNote(weekKey: string, userId?: string): Promise<W
 
 export async function getAllWeeklyNotes(limit = 52, userId?: string): Promise<WeeklyNote[]> {
   const prefix = userId ? `${userId}:note:` : "note:";
-  const keys = await kv.keys(`${prefix}*`);
-  const notes: WeeklyNote[] = [];
+  const keys = (await kv.keys(`${prefix}*`)).slice(0, limit);
+  if (keys.length === 0) return [];
 
-  for (const key of keys.slice(0, limit)) {
-    const note = await kv.get<WeeklyNote>(key);
-    if (note) notes.push(note);
-  }
+  // One `mget` rather than a `get` per week - it was 24 sequential round trips for Alan.
+  const notes = (await kv.mget<(WeeklyNote | null)[]>(...keys)).filter((n): n is WeeklyNote => !!n);
 
   // Sort by week descending (newest first)
   return notes.sort((a, b) => b.week.localeCompare(a.week));
@@ -990,11 +1202,17 @@ export async function getAllMoodEntries(limit = 90, userId?: string): Promise<Mo
     .sort()
     .reverse()
     .slice(0, limit);
-  const all: MoodEntry[] = [];
-  for (const date of sorted) {
-    const entries = await getMoodEntries(date, userId);
-    all.push(...entries);
-  }
+
+  // A day's moods are a list, so `mget` can't batch them - but a pipeline can. This was one
+  // `lrange` per day, 54 sequential round trips and 727ms for Alan's history.
+  const pipeline = kv.pipeline();
+  for (const date of sorted) pipeline.lrange(k(userId, `mood:${date}`), 0, -1);
+  const perDay = (await pipeline.exec()) as (string | MoodEntry)[][];
+
+  const all = perDay
+    .flat()
+    .map((raw) => (typeof raw === "string" ? (JSON.parse(raw) as MoodEntry) : raw))
+    .filter(Boolean);
   return all.sort((a, b) => b.timestamp - a.timestamp);
 }
 

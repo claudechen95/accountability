@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import type { WeeklyNote } from "@/lib/types";
+import { timedFetch } from "@/lib/client-perf";
 
 const PST = "America/Los_Angeles";
 
@@ -93,7 +94,7 @@ function NoteForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    await fetch(`/api/notes${q}`, {
+    await timedFetch(`/api/notes${q}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -296,7 +297,7 @@ export function NotesPage({ userId }: { userId?: string }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    fetch(`/api/notes${q}`)
+    timedFetch(`/api/notes${q}`)
       .then((r) => r.json())
       .then((data) => setNotes(data))
       .catch(() => setError("Couldn't load notes."))

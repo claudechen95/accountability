@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getUsers } from "@/lib/kv";
+import { measure } from "@/lib/perf";
 
 const PILLARS = [
   {
@@ -17,7 +18,7 @@ const PILLARS = [
 ];
 
 export default async function LandingPage() {
-  const users = await getUsers();
+  const users = await measure("RSC /", () => getUsers());
 
   return (
     <main className="min-h-screen bg-[#f8f7f4] flex flex-col">

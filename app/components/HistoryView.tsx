@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import type { Goal, TargetChange } from "@/lib/types";
 import { buildTargetTrend, daysBetween, monthTicks, targetLevels } from "@/lib/target-history";
+import { timedFetch, logFirstData } from "@/lib/client-perf";
 
 const PST = "America/Los_Angeles";
 
@@ -25,6 +26,12 @@ interface GoalHistory {
   reflections: Record<string, string>;
   targetHistory: TargetChange[];
 }
+
+/**
+ * `initialHistory` is rendered on the server by the page wrapper, so the grids are in the HTML
+ * rather than fetched after hydration. Optional - without it this fetches on mount as before,
+ * which is what a client-side navigation into this view does.
+ */
 
 // --- Tooltip ---
 function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
@@ -425,9 +432,15 @@ interface BackfillTarget {
   reflection?: string;
 }
 
-export function HistoryPage({ userId }: { userId?: string }) {
-  const [history, setHistory] = useState<GoalHistory[]>([]);
-  const [loading, setLoading] = useState(true);
+export function HistoryPage({
+  userId,
+  initialHistory,
+}: {
+  userId?: string;
+  initialHistory?: GoalHistory[];
+}) {
+  const [history, setHistory] = useState<GoalHistory[]>(initialHistory ?? []);
+  const [loading, setLoading] = useState(!initialHistory);
   const [error, setError] = useState<string | null>(null);
   const [backfillTarget, setBackfillTarget] = useState<BackfillTarget | null>(null);
   const [backfillSaving, setRetroSaving] = useState(false);
@@ -435,14 +448,27 @@ export function HistoryPage({ userId }: { userId?: string }) {
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
 
   const loadHistory = useCallback(() => {
-    fetch(`/api/history${q}`)
+    timedFetch(`/api/history${q}`)
       .then((r) => r.json())
       .then((data) => setHistory(data))
       .catch(() => setError("Couldn't load history."))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        logFirstData("history");
+      });
   }, [q]);
 
-  useEffect(() => { loadHistory(); }, [loadHistory]);
+  // Server-rendered data is current as of this request; re-fetching on mount would be a second
+  // round trip for an identical answer. Backfills still reload through loadHistory.
+  const serverRendered = useRef(!!initialHistory);
+  useEffect(() => {
+    if (serverRendered.current) {
+      serverRendered.current = false;
+      logFirstData("history (server-rendered)");
+      return;
+    }
+    loadHistory();
+  }, [loadHistory]);
 
   const handleBackfill = (goalId: string, period: string) => {
     const gh = history.find((h) => h.goal.id === goalId);
@@ -460,7 +486,7 @@ export function HistoryPage({ userId }: { userId?: string }) {
     if (!backfillTarget) return;
     setRetroSaving(true);
     try {
-      await fetch(`/api/checkins${q}`, {
+      await timedFetch(`/api/checkins${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goalId: backfillTarget.goalId, date: backfillTarget.period }),
