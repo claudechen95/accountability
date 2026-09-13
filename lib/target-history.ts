@@ -81,8 +81,11 @@ const LEAD_IN_DAYS = 14;
  * Records with the same date collapse to the last one written that day: changing 3x → 4x → 3x in
  * one sitting is not two steps, it's no change at all, and drawing zero-width segments for it
  * would be a lie about a day the user never actually spent at 4x.
+ *
+ * `endDate` is where the line stops - today for a tracked habit, its graduation date for a
+ * graduated one, so the chart covers the same span as the grid above it.
  */
-export function buildTargetTrend(changes: TargetChange[], today: string): TargetTrend | null {
+export function buildTargetTrend(changes: TargetChange[], endDate: string): TargetTrend | null {
   const ordered = [...changes].sort((a, b) => (a.date === b.date ? a.at - b.at : a.date < b.date ? -1 : 1));
 
   const perDate: TargetChange[] = [];
@@ -106,7 +109,9 @@ export function buildTargetTrend(changes: TargetChange[], today: string): Target
   const first = distinct[0];
   const openStart = first.origin !== "created";
   const domainStart = openStart ? shiftDate(distinct[1].date, -LEAD_IN_DAYS) : first.date;
-  const domainEnd = today;
+  // Never behind the last change: an endDate earlier than it would draw that segment backwards.
+  const lastChange = distinct[distinct.length - 1].date;
+  const domainEnd = endDate > lastChange ? endDate : lastChange;
 
   const segments: TargetSegment[] = distinct.map((change, i) => {
     const next = distinct[i + 1];

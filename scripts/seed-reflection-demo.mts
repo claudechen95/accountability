@@ -35,6 +35,9 @@ const goals: Goal[] = [
   { id: "eligible", name: "30-day run (offer graduation)", emoji: "💊", frequency: "daily", targetCount: 1, nudgeNumber: 6 },
   { id: "grad1", name: "Already graduated", emoji: "🦷", frequency: "daily", targetCount: 1, nudgeNumber: 7, graduatedAt: shift(today, -20), graduatedRun: 142 },
   { id: "grad2", name: "Also graduated", emoji: "💧", frequency: "weekly", targetCount: 2, nudgeNumber: 8, graduatedAt: shift(today, -5), graduatedRun: 9 },
+  // Graduated further back than the history grid is wide, which is the case that used to render
+  // as a blank grid reading 0%. Its run sits entirely outside a today-anchored window.
+  { id: "gradold", name: "Graduated long ago", emoji: "📚", frequency: "daily", targetCount: 1, nudgeNumber: 9, graduatedAt: shift(today, -120), graduatedRun: 60 },
 ];
 
 const checkins: Record<string, string[]> = {
@@ -47,6 +50,8 @@ const checkins: Record<string, string[]> = {
   eligible: Array.from({ length: 30 }, (_, i) => shift(today, -(i + 1))),
   grad1: [shift(today, -25)],
   grad2: [shift(today, -8)],
+  // A 60-day run ending on the day it graduated.
+  gradold: Array.from({ length: 60 }, (_, i) => shift(today, -(120 + i))),
 };
 
 const keys = [

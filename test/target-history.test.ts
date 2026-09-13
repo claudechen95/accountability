@@ -164,6 +164,33 @@ describe("buildTargetTrend", () => {
     expect(trend.steps.map((s) => s.direction)).toEqual(["up", "up"]);
   });
 
+  // A graduated habit's card stops at its graduation date, so its chart has to stop there too
+  // rather than running three months further right than the grid above it.
+  it("stops the line at the end date it is given", () => {
+    const trend = buildTargetTrend(
+      [
+        change({ date: "2026-05-01", targetCount: 1, origin: "created" }),
+        change({ date: "2026-06-15", targetCount: 2 }),
+      ],
+      "2026-07-20"
+    )!;
+
+    expect(trend.domainEnd).toBe("2026-07-20");
+    expect(trend.segments[trend.segments.length - 1].end).toBe("2026-07-20");
+  });
+
+  it("never ends behind the last change, which would draw that segment backwards", () => {
+    const trend = buildTargetTrend(
+      [
+        change({ date: "2026-05-01", targetCount: 1, origin: "created" }),
+        change({ date: "2026-06-15", targetCount: 2 }),
+      ],
+      "2026-06-01"
+    )!;
+
+    expect(trend.domainEnd).toBe("2026-06-15");
+  });
+
   // The date on a backfilled record is the date we noticed, not the date it started, so the line
   // before the first change has to be drawn as unknown rather than as a real start.
   it("leaves the run before a backfilled target open-ended", () => {

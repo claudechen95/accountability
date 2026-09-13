@@ -16,7 +16,6 @@ interface HistoryEntry {
   count: number;
   done: boolean;
   vacation: boolean;
-  graduated: boolean; // day falls after the habit graduated, so nothing was expected on it
 }
 
 interface GoalHistory {
@@ -159,17 +158,21 @@ function DailyGrid({
           ))}
         </div>
         {weeks.map((week, wi) => {
+          // A column is labelled with the month that *starts* inside it, falling back to whatever
+          // month the leftmost column opens in. Keying off the column's first day being the 1st
+          // only labelled a month when its 1st happened to land on a Monday, so a 13-week grid
+          // usually came out with one tick on it instead of three.
           const firstReal = week.find((e) => e !== null);
-          const showMonth =
-            firstReal && (wi === 0 || firstReal.period.endsWith("-01"));
-          const monthLabel = firstReal
-            ? new Date(firstReal.period + "T12:00:00").toLocaleDateString("en-US", { month: "short" })
+          const monthStart = week.find((e) => e?.period.endsWith("-01"));
+          const labelled = monthStart ?? (wi === 0 ? firstReal : undefined);
+          const monthLabel = labelled
+            ? new Date(labelled.period + "T12:00:00").toLocaleDateString("en-US", { month: "short" })
             : "";
 
           return (
             <div key={wi} className="flex flex-col gap-1">
               <div className="h-3 flex items-end justify-center">
-                {showMonth && (
+                {labelled && (
                   <span className="text-[9px] text-gray-400 leading-none">{monthLabel}</span>
                 )}
               </div>
@@ -179,8 +182,7 @@ function DailyGrid({
                 }
                 const isFuture = entry.period > today;
                 const isToday = entry.period === today;
-                const isMissed =
-                  !isFuture && !isToday && !entry.done && !entry.vacation && !entry.graduated;
+                const isMissed = !isFuture && !isToday && !entry.done && !entry.vacation;
                 const reflection = isMissed ? reflections[entry.period] : undefined;
                 const color = isFuture
                   ? "bg-gray-100"
@@ -188,8 +190,6 @@ function DailyGrid({
                   ? "bg-green-500"
                   : entry.vacation
                   ? "bg-sky-200"
-                  : entry.graduated
-                  ? "bg-gray-100"
                   : reflection
                   ? "bg-amber-300"
                   : "bg-gray-200";
@@ -198,8 +198,6 @@ function DailyGrid({
                 });
                 const status = isFuture
                   ? ""
-                  : entry.graduated
-                  ? ` · 🎓 graduated`
                   : frequency === "weekly"
                   ? ""
                   : entry.done
@@ -236,13 +234,6 @@ function DailyGrid({
         <span>vacation</span>
         <div className="w-3 h-3 rounded-sm bg-green-500" />
         <span>done</span>
-        {/* Only worth a swatch on a grid that actually has graduated days in it. */}
-        {entries.some((e) => e.graduated) && (
-          <>
-            <div className="w-3 h-3 rounded-sm bg-gray-100 border border-gray-200" />
-            <span>graduated</span>
-          </>
-        )}
       </div>
     </div>
   );
@@ -256,8 +247,8 @@ const CHART = { width: 300, height: 84, padLeft: 46, padRight: 6, padTop: 10, pa
 const UP = "#22c55e";   // green-500, same green the grid uses for a completed day
 const DOWN = "#fbbf24"; // amber-400
 
-function TargetTrendChart({ changes }: { changes: TargetChange[] }) {
-  const trend = buildTargetTrend(changes, getTodayPST());
+function TargetTrendChart({ changes, endDate }: { changes: TargetChange[]; endDate: string }) {
+  const trend = buildTargetTrend(changes, endDate);
   if (!trend) return null; // target never moved — a flat line is just noise
 
   const plotWidth = CHART.width - CHART.padLeft - CHART.padRight;
@@ -376,11 +367,18 @@ function GoalHistoryCard({
 }) {
   const { goal, entries, streak, reflections, targetHistory } = goalHistory;
   const today = getTodayPST();
+  // A graduated habit's window already ends at its graduation, so every entry in it is a day the
+  // habit was really being tracked on - there is nothing to exclude here for either kind.
   const doneCount = entries.filter((e) => e.done).length;
-  // Days after graduation were never expected, so they'd only drag the completion rate down
-  // for a habit the user was told to stop tracking.
-  const totalPast = entries.filter((e) => e.period <= today && !e.graduated).length;
+  const totalPast = entries.filter((e) => e.period <= today).length;
   const rate = totalPast > 0 ? Math.round((doneCount / totalPast) * 100) : 0;
+  const graduatedOn = goal.graduatedAt
+    ? new Date(goal.graduatedAt + "T12:00:00").toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
@@ -389,9 +387,9 @@ function GoalHistoryCard({
         <div>
           <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-1.5">
             {goal.name}
-            {goal.graduatedAt && (
+            {graduatedOn && (
               <span className="text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
-                🎓 graduated
+                🎓 {graduatedOn}
               </span>
             )}
           </h2>
@@ -405,22 +403,79 @@ function GoalHistoryCard({
         <StatPill label="check-ins" value={doneCount} />
         <div className="w-px bg-gray-200" />
         {/* Days for a daily habit, weeks for a weekly one. Spelled out because a bare "🔥 9" on a
-            grid that shows three months reads as weeks even when it's days. */}
+            grid that shows three months reads as weeks even when it's days. A graduated habit's
+            number was frozen at graduation, so "streak" would read as something still running. */}
         <StatPill
-          label={goal.frequency === "daily" ? "day streak" : "week streak"}
+          label={
+            goal.graduatedAt
+              ? goal.frequency === "daily" ? "final run · days" : "final run · weeks"
+              : goal.frequency === "daily" ? "day streak" : "week streak"
+          }
           value={streak > 0 ? `🔥 ${streak}` : "—"}
         />
       </div>
+
+      {graduatedOn && (
+        <p className="text-[11px] text-gray-400 mb-2">
+          The {entries.length} days up to graduation. Nothing is tracked after it.
+        </p>
+      )}
 
       <DailyGrid
         entries={entries}
         frequency={goal.frequency}
         reflections={reflections}
-        onBackfill={(period) => onBackfill(goal.id, period)}
+        // A graduated habit refuses check-ins server-side, so offering a backfill cell would
+        // hand the user a tap that can only come back a 409.
+        onBackfill={goal.graduatedAt ? undefined : (period) => onBackfill(goal.id, period)}
       />
 
-      <TargetTrendChart changes={targetHistory ?? []} />
+      <TargetTrendChart changes={targetHistory ?? []} endDate={goal.graduatedAt ?? today} />
     </div>
+  );
+}
+
+/**
+ * Graduated habits, folded away below the tracked ones - the history-page counterpart of the home
+ * screen's trophy shelf, so both places put them in the same box.
+ *
+ * Collapsed by default, where the shelf is open by default: the shelf is a row of emoji
+ * medallions, while these are full cards, so left open they'd push the habits the user is
+ * actually tracking off the screen as the shelf grows.
+ */
+function GraduatedSection({ histories }: { histories: GoalHistory[] }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <section className="pt-2">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-xs font-medium text-amber-700 hover:text-amber-800 transition-colors"
+      >
+        <span aria-hidden>🏆</span>
+        <span>Graduated · {histories.length}</span>
+        <svg
+          className={`w-3 h-3 transition-transform duration-200 ${open ? "" : "-rotate-90"}`}
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          aria-hidden
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 4.5L6 7.5L9 4.5" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="space-y-4 mt-3">
+          {histories.map((gh) => (
+            // No backfill handler: nothing on a graduated card is clickable anyway.
+            <GoalHistoryCard key={gh.goal.id} goalHistory={gh} onBackfill={() => {}} />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -446,6 +501,11 @@ export function HistoryPage({
   const [backfillSaving, setRetroSaving] = useState(false);
 
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
+
+  // Graduated habits sink below the tracked ones rather than sitting wherever storage order puts
+  // them, the same way the home screen lifts them out of the list onto the trophy shelf.
+  const tracked = history.filter((gh) => !gh.goal.graduatedAt);
+  const graduated = history.filter((gh) => gh.goal.graduatedAt);
 
   const loadHistory = useCallback(() => {
     timedFetch(`/api/history${q}`)
@@ -521,9 +581,10 @@ export function HistoryPage({
 
       {!loading && !error && (
         <div className="space-y-4">
-          {history.map((gh) => (
+          {tracked.map((gh) => (
             <GoalHistoryCard key={gh.goal.id} goalHistory={gh} onBackfill={handleBackfill} />
           ))}
+          {graduated.length > 0 && <GraduatedSection histories={graduated} />}
         </div>
       )}
 

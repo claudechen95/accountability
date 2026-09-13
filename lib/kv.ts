@@ -722,13 +722,16 @@ export async function getHistory(
   goal: Goal,
   periods: number,
   userId?: string
-): Promise<{ period: string; count: number; done: boolean; vacation: boolean; graduated: boolean }[]> {
+): Promise<{ period: string; count: number; done: boolean; vacation: boolean }[]> {
   return span("history.grid", () => buildHistory(goal, periods, userId));
 }
 
-/** The grid's date labels, oldest first. Shared with the priming pass so they can't diverge. */
-function historyLabels(periods: number): string[] {
-  const [ty, tm, td] = getTodayDate().split("-").map(Number);
+/**
+ * The grid's date labels, oldest first, ending on `endDate`. Shared with the priming pass so
+ * they can't diverge.
+ */
+function historyLabels(periods: number, endDate: string = getTodayDate()): string[] {
+  const [ty, tm, td] = endDate.split("-").map(Number);
   const labels: string[] = [];
   for (let i = periods - 1; i >= 0; i--) {
     const utcDate = new Date(Date.UTC(ty, tm - 1, td - i));
@@ -741,12 +744,31 @@ function historyLabels(periods: number): string[] {
   return labels;
 }
 
+/**
+ * The window one habit's grid covers.
+ *
+ * A graduated habit's window **ends at `graduatedAt`** rather than at today. The habit isn't
+ * tracked any more - `addCheckIn` throws for it, so neither a check-in nor a backfill can ever
+ * land - which means every day after graduation is a cell that could never hold anything. The
+ * window used to roll forward anyway, and the grid carried a third "graduated" colour for those
+ * days plus a rule excluding them from the completion-rate denominator. Once graduation was more
+ * than `HISTORY_PERIODS` days back that denominator hit zero, so a habit that graduated *for* a
+ * perfect run rendered as a blank grid reading 0% next to its frozen streak.
+ *
+ * Freezing the window is the fix at the root: the card becomes the record of the run that earned
+ * the graduation, every cell in it is a day that was really tracked, and the special-cased colour
+ * and denominator both go away.
+ */
+function goalHistoryLabels(goal: Goal, periods: number): string[] {
+  return historyLabels(periods, goal.graduatedAt);
+}
+
 async function buildHistory(
   goal: Goal,
   periods: number,
   userId?: string
-): Promise<{ period: string; count: number; done: boolean; vacation: boolean; graduated: boolean }[]> {
-  const labels = historyLabels(periods);
+): Promise<{ period: string; count: number; done: boolean; vacation: boolean }[]> {
+  const labels = goalHistoryLabels(goal, periods);
 
   const [counts, vacationWindows] = await Promise.all([
     readCheckins(goal.id, labels, userId),
@@ -760,9 +782,6 @@ async function buildHistory(
       count,
       done,
       vacation: isVacationDay(period, vacationWindows, goal.id),
-      // Days after graduation aren't misses - nothing was expected on them. The grid renders
-      // them as neutral and refuses to backfill them, the same way it treats vacation days.
-      graduated: !!goal.graduatedAt && period > goal.graduatedAt,
     };
   });
 }
@@ -793,10 +812,11 @@ export async function getGoalHistories(userId?: string): Promise<GoalHistory[]> 
   // in the same `Promise.all` - and both miss, costing an extra read per goal. It used to come
   // out right by accident, because the streak walk happened to block on an uncached vacation
   // read for exactly long enough; batching.test.ts caught that the moment vacation got faster.
-  const labels = historyLabels(HISTORY_PERIODS);
+  // Per goal, because a graduated habit's window ends at its graduation rather than at today -
+  // priming the today-anchored range for it would miss the keys its grid actually reads.
   await Promise.all([
     primeTargetHistories(goals, userId),
-    ...goals.map((g) => readCheckins(g.id, labels, userId)),
+    ...goals.map((g) => readCheckins(g.id, goalHistoryLabels(g, HISTORY_PERIODS), userId)),
   ]);
 
   return Promise.all(

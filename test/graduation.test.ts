@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 import {
   getGoalStatuses,
+  getGoalHistories,
+  HISTORY_PERIODS,
   graduateGoal,
   ungraduateGoal,
   snoozeGraduation,
@@ -140,6 +142,51 @@ describe("graduating and un-graduating", () => {
     const status = await statusOf("a");
     expect(status.graduatedAt).toBe(shift(TODAY, -10)); // original date and run untouched
     expect(status.graduatedRun).toBe(99);
+  });
+});
+
+describe("the history grid freezes at graduation", () => {
+  /** Check the habit in on each of the `days` days ending on `end`, inclusive. */
+  function seedRunEnding(goalId: string, end: string, days: number) {
+    for (let i = 0; i < days; i++) fakeRedis.seed(`${U}:checkin:${goalId}:${shift(end, -i)}`, 1);
+  }
+
+  async function historyOf(goalId: string) {
+    const histories = await getGoalHistories(U);
+    return histories.find((h) => h.goal.id === goalId)!;
+  }
+
+  it("ends the window at the graduation date, not at today", async () => {
+    const graduatedAt = shift(TODAY, -30);
+    setGoals({ ...daily("a"), graduatedAt, graduatedRun: 40 });
+
+    const { entries } = await historyOf("a");
+
+    expect(entries).toHaveLength(HISTORY_PERIODS);
+    expect(entries[entries.length - 1].period).toBe(graduatedAt);
+    expect(entries[0].period).toBe(shift(graduatedAt, -(HISTORY_PERIODS - 1)));
+  });
+
+  it("still reports the run that earned the graduation, months after the fact", async () => {
+    // The whole defect this replaced: once graduation fell out of the trailing window, every day
+    // in range was a post-graduation blank, so the card read 0% over 0 check-ins.
+    const graduatedAt = shift(TODAY, -HISTORY_PERIODS - 10);
+    setGoals({ ...daily("a"), graduatedAt, graduatedRun: 40 });
+    seedRunEnding("a", graduatedAt, 40);
+
+    const { entries, streak } = await historyOf("a");
+
+    expect(entries.filter((e) => e.done)).toHaveLength(40);
+    expect(entries.every((e) => e.period <= graduatedAt)).toBe(true);
+    expect(streak).toBe(40); // frozen, not recomputed
+  });
+
+  it("tracks today for a habit that hasn't graduated", async () => {
+    setGoals(daily("a"));
+
+    const { entries } = await historyOf("a");
+
+    expect(entries[entries.length - 1].period).toBe(TODAY);
   });
 });
 
