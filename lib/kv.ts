@@ -1,6 +1,7 @@
 import { Redis } from "@upstash/redis";
 import type { Goal, GoalStatus, CheckInRecord, WeeklyNote, MoodEntry, ReflectionPrompt, TargetChange } from "./types";
 import { sameTarget } from "./target-history";
+import { HIDEABLE_TABS } from "./tabs";
 import { instrumentRedis, span } from "./perf";
 import { cached, peek, prime, invalidate } from "./request-cache";
 
@@ -1304,6 +1305,10 @@ export interface UserRecord {
   checkinTopic?: string; // ntfy topic for habit completions
   phone?: string; // E.164 number for escalating text nudges (Sendblue) and the escalation call
   partnerPhone?: string; // E.164 number told when the ladder runs out (see lib/nudges.ts)
+  // Bottom-nav tabs this user has switched off in /admin, by `TabDef.key` (see lib/tabs.ts).
+  // Absent or empty means every tab shows, so a user record written before this existed reads
+  // as "show everything" rather than as "hide everything".
+  hiddenTabs?: string[];
 }
 
 const DEFAULT_USERS: UserRecord[] = [
@@ -1355,6 +1360,20 @@ export async function setUserPhone(id: string, phone: string): Promise<void> {
   const user = users.find((u) => u.id === id);
   if (!user) return;
   user.phone = normalizePhone(phone) || undefined;
+  await kv.set("users", users);
+}
+
+/**
+ * Replaces the whole hidden-tab set for a user - the admin screen sends the full list every time,
+ * so there's no add/remove to get out of step. An empty list is stored as absent, keeping "shows
+ * everything" a single shape rather than two.
+ */
+export async function setUserHiddenTabs(id: string, hiddenTabs: string[]): Promise<void> {
+  const users = await getUsers();
+  const user = users.find((u) => u.id === id);
+  if (!user) return;
+  const known = hiddenTabs.filter((key) => HIDEABLE_TABS.some((tab) => tab.key === key));
+  user.hiddenTabs = known.length > 0 ? known : undefined;
   await kv.set("users", users);
 }
 

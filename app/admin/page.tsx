@@ -2,6 +2,7 @@ import { getUsers, type UserRecord } from "@/lib/kv";
 import AddUserForm from "./AddUserForm";
 import DeleteUserButton from "./DeleteUserButton";
 import EditPhoneForm from "./EditPhoneForm";
+import TabVisibilityForm from "./TabVisibilityForm";
 
 function resolveCheckinTopic(user: UserRecord) {
   const upper = user.id.toUpperCase();
@@ -43,6 +44,7 @@ export default async function AdminPage() {
                   label="Partner"
                   value={user.partnerPhone ?? null}
                 />
+                <TabVisibilityForm id={user.id} hiddenTabs={user.hiddenTabs ?? []} />
               </div>
             </div>
           );

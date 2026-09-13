@@ -39,6 +39,20 @@ Writes directly to Redis. Prints the ntfy subscribe URLs. No deployment needed.
 
 The topic is stored inside the `UserRecord` in Redis (`checkinTopic`). The checkins route resolves it from Redis first, falling back to env vars for Alan/Claude/Rochisha whose topics were set before this system existed.
 
+### Hiding bottom-nav tabs
+
+`UserRecord.hiddenTabs` (a list of `TabDef.key`s) switches tabs off per user, edited at `/admin` and stored in the same `users` key as the phone numbers.
+`lib/tabs.ts` is the single list of hideable tabs, shared by `BottomNav` and the admin toggles so a tab can't exist in one and not the other; the icons stay in `BottomNav` because they're JSX.
+**Home has no key and can't be hidden** - it's the tracker, which is the app.
+The stored set is the *hidden* one, so a record written before this existed reads as "show everything"; `setUserHiddenTabs` stores an empty set as absent to keep that a single shape, and drops keys that aren't tabs.
+Alan currently hides Reflect and Coach.
+
+**Hiding a tab is decluttering, not permission.** There's no auth here - the route still renders for anyone who types the URL or follows a bookmark, and nothing server-side checks `hiddenTabs`.
+
+The list is read in **`app/layout.tsx`**, which is why that layout is now `async`. The nav is a client component and sits in the layout rather than in any page, so this is the only place the config can be fetched without a client round trip - and fetching it client-side would mean a hidden tab appearing on first paint and vanishing after hydration.
+The cost is that `/`, `/mood`, `/notes`, `/history`, `/reflections` and `/coach` are now `ƒ` dynamic rather than `○` static shells, each paying one `get` of the small `users` key (~9ms from `sfo1`).
+That's close to a wash rather than a regression: those pages all fetch their data on mount anyway, so the function was being woken either way - this moves the cold start ahead of the HTML instead of adding a second one. If it ever needs to come back, the lever is caching the `users` read specifically (it changes ~never, unlike habit state - see [Cold vs warm](#cold-vs-warm-and-why-theres-no-data-cache)), not un-hiding the tabs.
+
 ### Notification env vars per user
 
 There is no in-app nudge modal anymore — pending goals are surfaced entirely via the escalating text/call ladder (below) for users with a phone number configured. The habit-completion push notification still fires when a user checks off a goal, so their accountability partner sees it:
@@ -334,7 +348,7 @@ Round-trip count is the thing that decides how a page feels against a REST Redis
 
 **Time is pinned.** The data-layer suites `vi.setSystemTime` to Wed 26 Aug 2026. That date is deliberate: a Wednesday leaves 5 days in the week, which is the only way to construct both the "still winnable" and "already out of reach" weekly-goal cases. Never write a test that depends on the day it happens to run — an earlier throwaway script did, and its "out of reach" case was unconstructible on Mondays, so it failed every Monday for no real reason.
 
-Suites: `week-keys` (ISO week numbering, incl. a 400-day sweep across both year boundaries and a guard pinning already-stored note keys to their labels), `reflection` (every branch of `getReflectionPrompt`), `graduation` (eligibility, freeze/restore, the untracked guarantees, and the history window ending at `graduatedAt` - including the months-later case that used to read 0%), `nudges` (the pure `getPendingNudges` predicate, plus the escalation schedule: `nudgeSlots`, `dueSlotIndices`, `addMinutes`, `habitCallStart`, `nextCallTime`, `callScript`), `phone` (E.164 canonicalization, incl. the legacy-format inbound match), `nudge-ladder` (the dispatch route end to end), `nudge-inbound` (the Sendblue reply webhook), `notes` (the four-section note round-trip, blank-bullet stripping, and the pre-sections prose surviving an edit), `target-history` (what `recordTargetChange` logs - and what it declines to log - plus the step-line maths in `buildTargetTrend`), `batching` (the round-trip counts of the page-load reads).
+Suites: `week-keys` (ISO week numbering, incl. a 400-day sweep across both year boundaries and a guard pinning already-stored note keys to their labels), `reflection` (every branch of `getReflectionPrompt`), `graduation` (eligibility, freeze/restore, the untracked guarantees, and the history window ending at `graduatedAt` - including the months-later case that used to read 0%), `nudges` (the pure `getPendingNudges` predicate, plus the escalation schedule: `nudgeSlots`, `dueSlotIndices`, `addMinutes`, `habitCallStart`, `nextCallTime`, `callScript`), `phone` (E.164 canonicalization, incl. the legacy-format inbound match), `nudge-ladder` (the dispatch route end to end), `nudge-inbound` (the Sendblue reply webhook), `notes` (the four-section note round-trip, blank-bullet stripping, and the pre-sections prose surviving an edit), `target-history` (what `recordTargetChange` logs - and what it declines to log - plus the step-line maths in `buildTargetTrend`), `batching` (the round-trip counts of the page-load reads), `tabs` (nav visibility - the pure filter, and that an empty hidden set stores as absent so it can't read back as "hide everything").
 
 `nudge-ladder` is the one suite that drives an API route rather than the data layer.
 It replays a whole PST day at the real cron cadence (a POST every 10 simulated minutes, 8am–11pm) with Sendblue and Twilio mocked, and asserts the exact transcript of what went out and when — for its 18:00 habit, `18:00 text`, `19:20 text`, `20:40 text`, `20:50 call`, `21:00 call`, `21:10 call`, `21:40 partner text`.
