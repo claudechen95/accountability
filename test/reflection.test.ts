@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, beforeAll } from "vitest";
 import { vi } from "vitest";
-import { getReflectionPrompt } from "@/lib/kv";
+import { addCheckIn, getGoalHistories, getReflectionPrompt, saveReflection } from "@/lib/kv";
 import type { Goal } from "@/lib/types";
 import { fakeRedis } from "./redis-fake";
 
@@ -156,5 +156,26 @@ describe("getReflectionPrompt - when not to ask at all", () => {
     const graduated: Goal = { ...weekly("g", 3), graduatedAt: "2026-08-20", graduatedRun: 12 };
     // Same data that produced a required week-missed above.
     expect(await getReflectionPrompt(graduated, U)).toBeNull();
+  });
+});
+
+describe("a saved reflection reaches the history grid", () => {
+  const TODAY = "2026-08-26";
+
+  it("comes back against the day it was written, even though that day is completed", async () => {
+    // The normal weekly flow: the prompt appears, the user writes, and then the check-in the
+    // prompt was gating goes through - all on the same day. `getReflectionDateKey` files a
+    // weekly reflection under that day, so the reflection and the check-in land on one period.
+    // The grid used to look reflections up only for *missed* days, which meant every reflection
+    // a weekly habit ever collected was dropped on the floor.
+    fakeRedis.seed(`${U}:goals`, [weekly("w", 6)]);
+    await saveReflection("w", "Work had early meetings", U);
+    await addCheckIn("w", TODAY, U);
+
+    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "w")!;
+    const today = history.entries.find((e) => e.period === TODAY)!;
+
+    expect(today.done).toBe(true);
+    expect(history.reflections[TODAY]).toBe("Work had early meetings");
   });
 });

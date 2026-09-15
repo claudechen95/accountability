@@ -183,16 +183,22 @@ function DailyGrid({
                 const isFuture = entry.period > today;
                 const isToday = entry.period === today;
                 const isMissed = !isFuture && !isToday && !entry.done && !entry.vacation;
-                const reflection = isMissed ? reflections[entry.period] : undefined;
+                // A reflection shows wherever it was written, not only on a missed day. A weekly
+                // goal files its reflection under the day it was written (`getReflectionDateKey`),
+                // and that day is checked in seconds later - so gating this on `isMissed` hid
+                // every reflection a weekly habit has ever collected.
+                const reflection = reflections[entry.period];
                 const color = isFuture
                   ? "bg-gray-100"
                   : entry.done
                   ? "bg-green-500"
                   : entry.vacation
                   ? "bg-sky-200"
-                  : reflection
-                  ? "bg-amber-300"
                   : "bg-gray-200";
+                // Fill carries the outcome and the ring carries "there's a reflection here", so
+                // neither can hide the other - an amber fill on a missed day used to mean the
+                // grid couldn't say "missed" and "reflected" at once.
+                const ring = reflection ? " ring-1 ring-inset ring-amber-500" : "";
                 const label = new Date(entry.period + "T12:00:00").toLocaleDateString("en-US", {
                   weekday: "short", month: "short", day: "numeric",
                 });
@@ -215,7 +221,7 @@ function DailyGrid({
                 return (
                   <Tooltip key={di} text={tooltipText}>
                     <div
-                      className={`w-3 h-3 rounded-sm ${color} transition-colors ${clickable ? "cursor-pointer hover:opacity-70 active:scale-90" : "cursor-default"}`}
+                      className={`w-3 h-3 rounded-sm ${color}${ring} transition-colors ${clickable ? "cursor-pointer hover:opacity-70 active:scale-90" : "cursor-default"}`}
                       onClick={() => clickable && onBackfill!(entry.period)}
                     />
                   </Tooltip>
@@ -228,7 +234,7 @@ function DailyGrid({
       <div className="flex items-center gap-2 mt-2 text-[10px] text-gray-400">
         <div className="w-3 h-3 rounded-sm bg-gray-200" />
         <span>missed</span>
-        <div className="w-3 h-3 rounded-sm bg-amber-300" />
+        <div className="w-3 h-3 rounded-sm bg-gray-200 ring-1 ring-inset ring-amber-500" />
         <span>reflected</span>
         <div className="w-3 h-3 rounded-sm bg-sky-200" />
         <span>vacation</span>
