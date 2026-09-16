@@ -355,16 +355,40 @@ function TrophyShelf({
   );
 }
 
+/** How many missed days the prompt names before it falls back to counting them. */
+const MAX_NAMED_MISSED_DAYS = 4;
+
+function joinList(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 // What the prompt actually says, which depends on why we're asking. A weekly habit isn't
 // "missed" because of one skipped day, so it gets the arithmetic that made us ask instead.
 function reflectionPromptText(prompt: ReflectionPrompt): ReactNode {
   const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
 
   if (prompt.reason === "missed-day") {
-    const weekday = new Date(prompt.date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" });
+    // One day reads better as a weekday ("Sunday you missed this") than as a date; a run of them
+    // needs dates to be legible at all. Only the most recent few are named - a fortnight's
+    // backlog listed in full is a wall of dates nobody reads - with the count carrying the rest.
+    if (prompt.dates.length === 1) {
+      const weekday = new Date(prompt.dates[0] + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" });
+      return (
+        <>
+          <span className="font-medium">{weekday}</span> you missed this. What got in the way?
+        </>
+      );
+    }
+    const shown = prompt.dates.slice(-MAX_NAMED_MISSED_DAYS);
+    const named = joinList(
+      shown.map((d) => new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }))
+    );
+    const rest = prompt.dates.length - shown.length;
     return (
       <>
-        <span className="font-medium">{weekday}</span> you missed this. What got in the way?
+        You missed this on {rest > 0 ? `${days(prompt.dates.length)}, most recently ` : null}
+        <span className="font-medium">{named}</span>. What got in the way?
       </>
     );
   }
@@ -420,6 +444,9 @@ function ReflectionModal({
   // reflection and the old skip link, which gave away the check-in for a single tap.
   const short = text.trim().length < MIN_REFLECTION_CHARS;
   const blocked = prompt.required && short;
+  // One reflection answers the whole run, so say so - otherwise the grid filling in several
+  // amber rings from one box of text looks like it went somewhere it shouldn't have.
+  const coveredDays = prompt.reason === "missed-day" ? prompt.dates.length : 1;
 
   return (
     <div
@@ -455,6 +482,12 @@ function ReflectionModal({
           className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 placeholder-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-gray-300"
           autoFocus
         />
+
+        {coveredDays > 1 && (
+          <p className="text-xs text-gray-400 -mt-2">
+            {coveredDays === 2 ? "This covers both days." : `This covers all ${coveredDays} days.`}
+          </p>
+        )}
 
         <div className="flex flex-col gap-2">
           <button

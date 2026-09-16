@@ -75,7 +75,9 @@ export interface WeeklyNote {
 // Why we're asking for a reflection before the next check-in. Carries the numbers behind the
 // call so the prompt can say what actually went wrong instead of a generic "you missed this".
 export type ReflectionReason =
-  | { reason: "missed-day"; date: string }                                        // daily goal, no check-in yesterday
+  // Daily goal: every recent missed day it hasn't been asked about yet, oldest first. A run of
+  // misses is one prompt covering all of them, not one prompt for the last day of the run.
+  | { reason: "missed-day"; dates: string[] }
   | { reason: "week-behind"; completed: number; target: number; daysLeft: number } // weekly goal, out of slack
   | { reason: "week-missed"; completed: number; target: number };                  // weekly goal, last week closed short
 

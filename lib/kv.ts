@@ -520,27 +520,77 @@ export async function saveGoals(goals: Goal[], userId?: string): Promise<void> {
  */
 async function primeHistoryLengths(goals: Goal[], userId?: string): Promise<void> {
   const keys = goals.filter((g) => !isGraduated(g)).map((g) => k(userId, `history:${g.id}`));
-  if (keys.length <= 1) return; // a single `llen` is cheaper than a pipeline round trip
+  if (keys.length === 0) return;
+  // The list's tail is the habit's first ever check-in (nothing trims these lists), which bounds
+  // the reflection lookback to days the habit actually existed for. It rides in this pipeline
+  // rather than being read per goal, so it's free: two commands in one round trip, not two.
   const pipeline = kv.pipeline();
-  for (const key of keys) pipeline.llen(key);
-  const lengths = (await pipeline.exec()) as number[];
-  keys.forEach((key, i) => prime(key, lengths[i] ?? 0));
+  for (const key of keys) {
+    pipeline.llen(key);
+    pipeline.lrange(key, -1, -1);
+  }
+  const results = await pipeline.exec();
+  keys.forEach((key, i) => {
+    prime(key, (results[i * 2] as number) ?? 0);
+    prime(firstCheckInSlot(key), checkInRecordDate((results[i * 2 + 1] as unknown[])?.[0]));
+  });
 }
 
 /**
- * Every goal's current week, in one `mget`, before the per-goal work starts.
+ * Cache slot for a history list's oldest entry. Distinct from the list key itself, which holds
+ * that list's `llen` - two different reads of one key, so they can't share a slot.
+ */
+function firstCheckInSlot(historyKey: string): string {
+  return `${historyKey}#first`;
+}
+
+/** The `date` off a stored `CheckInRecord`, which Upstash may hand back parsed or as JSON. */
+function checkInRecordDate(raw: unknown): string | null {
+  if (!raw) return null;
+  const record = (typeof raw === "string" ? JSON.parse(raw) : raw) as CheckInRecord;
+  return record?.date ?? null;
+}
+
+/** The day this habit was first checked in, or null if it never has been. */
+async function getFirstCheckInDate(goalId: string, userId?: string): Promise<string | null> {
+  const historyKey = k(userId, `history:${goalId}`);
+  return cached(firstCheckInSlot(historyKey), async () =>
+    checkInRecordDate((await kv.lrange(historyKey, -1, -1))[0])
+  );
+}
+
+/**
+ * Every per-day key the fan-out below will ask for, in one `mget`, before the per-goal work
+ * starts: each goal's current week, plus the reflection lookback window for the daily ones.
  *
  * `getCompletedThisPeriod`, `getCheckInsForPeriod` and the first block of the streak walk all
- * want these keys, and they run inside one `Promise.all` - so they ask concurrently, all miss the
- * cache, and each issues its own read. Priming first turns those into cache hits. This is the
- * one place that has to know the fan-out is happening; everything downstream stays unaware.
+ * want the current week, and they run inside one `Promise.all` - so they ask concurrently, all
+ * miss the cache, and each issues its own read. Priming first turns those into cache hits. This
+ * is the one place that has to know the fan-out is happening; everything downstream stays
+ * unaware.
+ *
+ * The lookback window rides along rather than being a second batch because an `mget`'s cost is
+ * the round trip and almost nothing else - measured flat at ~10ms from 13 keys to 390 - so the
+ * number that matters is that this stays *one* command however many habits and days it covers.
  */
-async function primeCurrentPeriod(goals: Goal[], userId?: string): Promise<void> {
+async function primeDayKeys(goals: Goal[], userId?: string): Promise<void> {
   const tracked = goals.filter((g) => !isGraduated(g));
   if (tracked.length === 0) return;
   const thisWeek = getWeekDatesForDate(getTodayDate());
-  const keys = tracked.flatMap((g) => thisWeek.map((d) => k(userId, `checkin:${g.id}:${d}`)));
-  const values = await kv.mget<(number | null)[]>(...keys);
+  const lookback = reflectionWindowDates();
+  const keys = tracked.flatMap((g) => {
+    // Only daily goals sweep the window; a weekly goal's reflection is filed under the day it
+    // was written and its prompt is judged against the week, so neither reads these.
+    const days =
+      g.frequency === "daily"
+        ? Array.from(new Set(thisWeek.concat(lookback)))
+        : thisWeek;
+    return [
+      ...days.map((d) => k(userId, `checkin:${g.id}:${d}`)),
+      ...(g.frequency === "daily" ? lookback.map((d) => k(userId, `reflection:${g.id}:${d}`)) : []),
+    ];
+  });
+  const values = await kv.mget<(unknown | null)[]>(...keys);
   keys.forEach((key, i) => prime(key, values[i] ?? null));
 }
 
@@ -549,7 +599,7 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
   // waiting for one. Its readers are the streak walks two waves later, and the request cache
   // hands them this promise.
   const [goals] = await Promise.all([getGoals(userId), getVacationWindows(userId)]);
-  await Promise.all([primeHistoryLengths(goals, userId), primeCurrentPeriod(goals, userId)]);
+  await Promise.all([primeHistoryLengths(goals, userId), primeDayKeys(goals, userId)]);
   return Promise.all(
     goals.map(async (goal) => {
       // A graduated habit isn't tracked any more, so there's nothing to recompute - its run was
@@ -1011,11 +1061,69 @@ function getYesterdayDateStr(): string {
   return addDaysToDateStr(getTodayDate(), -1);
 }
 
-// The date a reflection is filed under. A daily goal's reflection is about the day it was
-// skipped (yesterday); a weekly goal's is about the week as a whole, so it's filed under the
-// day it was written.
-export function getReflectionDateKey(goal: Goal): string {
-  return goal.frequency === "daily" ? getYesterdayDateStr() : getTodayDate();
+/**
+ * How far back the daily prompt looks for misses it hasn't asked about yet.
+ *
+ * It used to ask about yesterday and nothing else, which left two kinds of miss unreachable: a
+ * day in the middle of a run (the prompt fires on the next check-in, so only the run's last day
+ * was ever a candidate), and a day whose next check-in came from the history grid's backfill,
+ * which doesn't go through the prompt at all. Over 91 days of one daily habit that was 8 and 2
+ * days respectively against 5 reflections actually collected.
+ *
+ * Bounded rather than open-ended because a reflection written in October about a day in June
+ * isn't a reflection, and because a dismissed prompt would otherwise re-ask forever. The window
+ * costs one key per day per daily habit, primed with everything else in `primeDayKeys` - one
+ * `mget` regardless of size, which measured flat from 13 keys to 390.
+ */
+export const REFLECTION_LOOKBACK_DAYS = 14;
+
+/** The lookback window, oldest first, ending yesterday. Today is still in play, so it's out. */
+function reflectionWindowDates(): string[] {
+  const today = getTodayDate();
+  const dates: string[] = [];
+  for (let i = REFLECTION_LOOKBACK_DAYS; i >= 1; i--) dates.push(addDaysToDateStr(today, -i));
+  return dates;
+}
+
+/**
+ * The days in the window this habit missed and hasn't reflected on, oldest first.
+ *
+ * Excludes vacation days (never expected), days that already carry a reflection (asked and
+ * answered - and re-asking would overwrite the answer), and days before the habit's first
+ * check-in, without which a habit added yesterday would be asked to account for the fortnight
+ * before it existed.
+ */
+async function getUnreflectedMissedDays(goal: Goal, userId?: string): Promise<string[]> {
+  const [vacationWindows, firstCheckIn] = await Promise.all([
+    getVacationWindows(userId),
+    getFirstCheckInDate(goal.id, userId),
+  ]);
+  const days = reflectionWindowDates().filter(
+    (date) =>
+      (!firstCheckIn || date >= firstCheckIn) && !isVacationDay(date, vacationWindows, goal.id)
+  );
+  if (days.length === 0) return [];
+
+  const [counts, reflections] = await Promise.all([
+    readCheckins(goal.id, days, userId),
+    getReflectionsForGoal(goal.id, days, userId),
+  ]);
+  return days.filter((date) => (counts.get(date) ?? 0) === 0 && !reflections[date]);
+}
+
+/**
+ * The days a reflection written right now is about.
+ *
+ * A daily goal's reflection covers every miss the prompt just named, so the same text lands on
+ * each of them and the history grid marks the whole run reflected rather than its last day
+ * alone. A weekly goal's is about the week, so it stays filed under the day it was written.
+ * The yesterday fallback keeps a reflection saved with nothing outstanding (a dismissed prompt
+ * re-opened, a stale tab) landing where it always did.
+ */
+async function reflectionDateKeys(goal: Goal, userId?: string): Promise<string[]> {
+  if (goal.frequency !== "daily") return [getTodayDate()];
+  const missed = await getUnreflectedMissedDays(goal, userId);
+  return missed.length > 0 ? missed : [getYesterdayDateStr()];
 }
 
 /**
@@ -1058,10 +1166,14 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   const paused = (date: string) => isVacationDay(date, vacationWindows, goal.id);
 
   if (goal.frequency === "daily") {
-    const yesterday = getYesterdayDateStr();
-    if (paused(yesterday)) return null;
-    const count = await getCheckInsForPeriod(goal.id, yesterday, userId);
-    return count === 0 ? { reason: "missed-day", date: yesterday, required: true } : null;
+    const dates = await getUnreflectedMissedDays(goal, userId);
+    if (dates.length === 0) return null;
+    // Yesterday is the day that has only just been lost, so it's the one worth charging the
+    // next check-in for. An older backlog is worth raising but not worth blocking on: the user
+    // is checking in as we ask, and a toll they can't clear by doing the right thing today is
+    // how a prompt turns into something people learn to dismiss.
+    const required = dates[dates.length - 1] === getYesterdayDateStr();
+    return { reason: "missed-day", dates, required };
   }
 
   const today = getTodayDate();
@@ -1089,20 +1201,45 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   return null;
 }
 
+type StoredReflection = { text: string; savedAt: number } | null;
+
+/**
+ * Reflection text by period key, for whichever of `periodKeys` has one.
+ *
+ * Goes through the request cache for the same reason `readCheckins` does: the history page asks
+ * per goal and the daily prompt asks for its lookback window, and `primeDayKeys` fetches that
+ * window for every habit in one `mget` before either of them runs.
+ */
 export async function getReflectionsForGoal(
   goalId: string,
   periodKeys: string[],
   userId?: string
 ): Promise<Record<string, string>> {
   if (periodKeys.length === 0) return {};
-  const values = (await span("reflections.mget", () =>
-    kv.mget(...periodKeys.map((pk) => k(userId, `reflection:${goalId}:${pk}`)))
-  )) as ({ text: string; savedAt: number } | null)[];
   const result: Record<string, string> = {};
-  periodKeys.forEach((pk, i) => {
-    const val = values[i];
-    if (val?.text) result[pk] = val.text;
-  });
+  const missing: string[] = [];
+
+  await Promise.all(
+    periodKeys.map(async (pk) => {
+      const hit = peek<StoredReflection>(k(userId, `reflection:${goalId}:${pk}`));
+      if (hit) {
+        const value = await hit;
+        if (value?.text) result[pk] = value.text;
+      } else {
+        missing.push(pk);
+      }
+    })
+  );
+
+  if (missing.length > 0) {
+    const keys = missing.map((pk) => k(userId, `reflection:${goalId}:${pk}`));
+    const values = (await span("reflections.mget", () => kv.mget(...keys))) as StoredReflection[];
+    missing.forEach((pk, i) => {
+      const value = values[i] ?? null;
+      prime(keys[i], value);
+      if (value?.text) result[pk] = value.text;
+    });
+  }
   return result;
 }
 
@@ -1112,8 +1249,15 @@ export async function saveReflection(goalId: string, text: string, userId?: stri
   const goals = await getGoals(userId);
   const goal = goals.find((g) => g.id === goalId);
   if (!goal) return;
-  const periodKey = getReflectionDateKey(goal);
-  await kv.set(k(userId, `reflection:${goalId}:${periodKey}`), { text, savedAt: Date.now() });
+  const value = { text, savedAt: Date.now() };
+  const dates = await reflectionDateKeys(goal, userId);
+  await Promise.all(
+    dates.map(async (date) => {
+      const key = k(userId, `reflection:${goalId}:${date}`);
+      await kv.set(key, value);
+      invalidate(key);
+    })
+  );
 }
 
 // --- Weekly Notes ---

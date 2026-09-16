@@ -3,7 +3,7 @@
 // deletes every key it wrote.
 // Run: npx tsx --env-file=.env.local scripts/seed-reflection-demo.mts [clean]
 import { Redis } from "@upstash/redis";
-import { getTodayDate } from "../lib/kv";
+import { getTodayDate, REFLECTION_LOOKBACK_DAYS } from "../lib/kv";
 import type { Goal } from "../lib/types";
 
 const kv = new Redis({
@@ -56,7 +56,12 @@ const checkins: Record<string, string[]> = {
 
 const keys = [
   `${U}:goals`,
-  ...goals.flatMap((g) => [`${U}:history:${g.id}`, `${U}:reflection:${g.id}:${today}`, `${U}:reflection:${g.id}:${shift(today, -1)}`]),
+  // The whole lookback window, not just today and yesterday: a daily reflection now files
+  // against every missed day the prompt named, so `clean` has to sweep the same span.
+  ...goals.flatMap((g) => [
+    `${U}:history:${g.id}`,
+    ...Array.from({ length: REFLECTION_LOOKBACK_DAYS + 1 }, (_, i) => `${U}:reflection:${g.id}:${shift(today, -i)}`),
+  ]),
   ...Object.entries(checkins).flatMap(([id, dates]) => dates.map((d) => `${U}:checkin:${id}:${d}`)),
   ...goals.flatMap((g) => Array.from({ length: 40 }, (_, i) => `${U}:checkin:${g.id}:${shift(today, -i)}`)),
 ];
@@ -72,7 +77,10 @@ async function main() {
   await kv.set(`${U}:goals`, goals);
   for (const [id, dates] of Object.entries(checkins)) {
     for (const d of dates) await kv.set(`${U}:checkin:${id}:${d}`, 1);
-    await kv.lpush(`${U}:history:${id}`, JSON.stringify({ goalId: id, timestamp: 1, date: dates[0], week: "seed" }));
+    // Dated at the *earliest* check-in: the list's tail is where the reflection lookback reads
+    // the habit's start date from, and a record dated later would bound the window to it.
+    const first = [...dates].sort()[0];
+    await kv.lpush(`${U}:history:${id}`, JSON.stringify({ goalId: id, timestamp: 1, date: first, week: "seed" }));
   }
   console.log(`seeded /${U} — today=${today}, dow=${dow}, daysLeft=${daysLeft}`);
 }

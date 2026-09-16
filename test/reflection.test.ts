@@ -22,12 +22,15 @@ const lastWeekDay = (i: number) => shift(MONDAY, i - 7);
 /** Give the goal some check-in history, which is what makes it eligible to be prompted at all. */
 function seedCheckIns(goalId: string, dates: string[]) {
   for (const date of dates) fakeRedis.seed(`${U}:checkin:${goalId}:${date}`, 1);
-  fakeRedis.seedListEntry(`${U}:history:${goalId}`, {
-    goalId,
-    timestamp: 1,
-    date: dates[0] ?? MONDAY,
-    week: "seed",
-  });
+  // One record per check-in, seeded oldest first. The list is written newest-first, so this puts
+  // the earliest at the tail - which is where the daily lookback reads the habit's start date
+  // from, and why a habit can't be asked about days before it existed.
+  for (const date of [...dates].sort()) {
+    fakeRedis.seedListEntry(`${U}:history:${goalId}`, { goalId, timestamp: 1, date, week: "seed" });
+  }
+  if (dates.length === 0) {
+    fakeRedis.seedListEntry(`${U}:history:${goalId}`, { goalId, timestamp: 1, date: MONDAY, week: "seed" });
+  }
 }
 
 const weekly = (id: string, targetCount: number): Goal =>
@@ -43,12 +46,38 @@ afterAll(() => vi.useRealTimers());
 beforeEach(() => fakeRedis.reset());
 
 describe("getReflectionPrompt - daily goals", () => {
+  const TODAY = "2026-08-26";
+  const seedReflection = (goalId: string, date: string) =>
+    fakeRedis.seed(`${U}:reflection:${goalId}:${date}`, { text: "already said", savedAt: 1 });
+
   it("asks, and requires an answer, when yesterday had no check-in", async () => {
-    seedCheckIns("d", [shift("2026-08-26", -3)]);
+    seedCheckIns("d", [shift(TODAY, -2)]);
     expect(await getReflectionPrompt(daily("d"), U)).toEqual({
       reason: "missed-day",
-      date: "2026-08-25",
+      dates: ["2026-08-25"],
       required: true,
+    });
+  });
+
+  it("asks about the whole run of misses, not just the last day of it", async () => {
+    // The gap this replaced: the prompt fires on the next check-in and only ever looked at
+    // yesterday, so 22nd-25th produced one reflection filed on the 25th and the three days
+    // inside the run could never be reflected on at all.
+    seedCheckIns("d", [shift(TODAY, -5)]);
+    expect(await getReflectionPrompt(daily("d"), U)).toMatchObject({
+      dates: ["2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25"],
+      required: true,
+    });
+  });
+
+  it("asks about an older backlog without charging the check-in for it", async () => {
+    // Yesterday is fine, so nothing has just been lost - but the 23rd was missed and never
+    // answered for, which used to be unreachable once the next day's check-in went in.
+    seedCheckIns("d", [shift(TODAY, -4), shift(TODAY, -2), shift(TODAY, -1)]);
+    expect(await getReflectionPrompt(daily("d"), U)).toEqual({
+      reason: "missed-day",
+      dates: ["2026-08-23"],
+      required: false,
     });
   });
 
@@ -57,12 +86,65 @@ describe("getReflectionPrompt - daily goals", () => {
     expect(await getReflectionPrompt(daily("d"), U)).toBeNull();
   });
 
-  it("stays quiet when yesterday was a vacation day", async () => {
-    seedCheckIns("d", [shift("2026-08-26", -10)]);
+  it("drops days that have already been reflected on", async () => {
+    seedCheckIns("d", [shift(TODAY, -3)]);
+    seedReflection("d", "2026-08-24");
+    // Asking again would overwrite the answer already given for the 24th.
+    expect(await getReflectionPrompt(daily("d"), U)).toMatchObject({ dates: ["2026-08-25"] });
+  });
+
+  it("never asks about a vacation day, but still asks about the misses around it", async () => {
+    seedCheckIns("d", [shift(TODAY, -10)]);
     fakeRedis.seed(`${U}:settings:vacation`, [
       { startDate: "2026-08-20", endDate: "2026-08-26", goalIds: ["d"] },
     ]);
+    expect(await getReflectionPrompt(daily("d"), U)).toMatchObject({
+      dates: ["2026-08-17", "2026-08-18", "2026-08-19"],
+      required: false, // yesterday was paused, so nothing was lost yesterday
+    });
+  });
+
+  it("never asks about days before the habit's first check-in", async () => {
+    // Otherwise a habit added the day before yesterday opens with a fortnight of misses to
+    // account for, none of which it was around for.
+    seedCheckIns("d", [shift(TODAY, -2)]);
+    const prompt = await getReflectionPrompt(daily("d"), U);
+    expect(prompt).toMatchObject({ dates: ["2026-08-25"] });
+  });
+
+  it("goes quiet again once the whole run has been answered", async () => {
+    fakeRedis.seed(`${U}:goals`, [daily("d")]);
+    seedCheckIns("d", [shift(TODAY, -5)]);
+    await saveReflection("d", "Was travelling all week", U);
     expect(await getReflectionPrompt(daily("d"), U)).toBeNull();
+  });
+});
+
+describe("saveReflection", () => {
+  const TODAY = "2026-08-26";
+
+  it("files one daily reflection against every missed day it named", async () => {
+    fakeRedis.seed(`${U}:goals`, [daily("d")]);
+    seedCheckIns("d", [shift(TODAY, -4)]);
+    await saveReflection("d", "Was travelling all week", U);
+
+    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "d")!;
+    expect(Object.keys(history.reflections).sort()).toEqual([
+      "2026-08-23",
+      "2026-08-24",
+      "2026-08-25",
+    ]);
+  });
+
+  it("falls back to yesterday when there's nothing outstanding", async () => {
+    // A dismissed prompt re-opened after the habit was backfilled, or a stale tab - the text
+    // still has to land somewhere, and yesterday is where it always landed.
+    fakeRedis.seed(`${U}:goals`, [daily("d")]);
+    seedCheckIns("d", [shift(TODAY, -1)]);
+    await saveReflection("d", "Nothing outstanding", U);
+
+    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "d")!;
+    expect(Object.keys(history.reflections)).toEqual(["2026-08-25"]);
   });
 });
 
