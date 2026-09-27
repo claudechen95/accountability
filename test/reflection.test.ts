@@ -33,8 +33,8 @@ function seedCheckIns(goalId: string, dates: string[]) {
   }
 }
 
-const weekly = (id: string, targetCount: number): Goal =>
-  ({ id, name: id, emoji: "x", frequency: "weekly", targetCount });
+const weekly = (id: string, targetCount: number, nudgeDays?: number[]): Goal =>
+  ({ id, name: id, emoji: "x", frequency: "weekly", targetCount, nudgeDays });
 const daily = (id: string): Goal =>
   ({ id, name: id, emoji: "x", frequency: "daily", targetCount: 1 });
 
@@ -136,6 +136,17 @@ describe("saveReflection", () => {
     ]);
   });
 
+  it("files a weekly reflection against the day its prompt named", async () => {
+    // The prompt asks about last Sunday, so that's what the text is about and that's where the
+    // grid's amber ring belongs. Filing it under today would ring the day the habit was *done*.
+    fakeRedis.seed(`${U}:goals`, [weekly("w", 3)]);
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
+    await saveReflection("w", "Weekend got away from me", U);
+
+    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "w")!;
+    expect(Object.keys(history.reflections)).toEqual(["2026-08-23"]);
+  });
+
   it("falls back to yesterday when there's nothing outstanding", async () => {
     // A dismissed prompt re-opened after the habit was backfilled, or a stale tab - the text
     // still has to land somewhere, and yesterday is where it always landed.
@@ -163,6 +174,7 @@ describe("getReflectionPrompt - weekly goals", () => {
     // now, so charging them for good behaviour would turn the prompt into noise.
     expect(await getReflectionPrompt(weekly("w", 5), U)).toEqual({
       reason: "week-behind",
+      date: "2026-08-25", // Tuesday, the last day of this week that closed unfilled
       completed: 0,
       target: 5,
       daysLeft: 5,
@@ -173,8 +185,11 @@ describe("getReflectionPrompt - weekly goals", () => {
   it("requires a reflection once the target is out of reach", async () => {
     seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1), lastWeekDay(2), lastWeekDay(3), lastWeekDay(4), lastWeekDay(5), lastWeekDay(6)]);
     // 0 of 7 with 5 days left: the week is lost, so the only useful move is naming why.
+    // Today is unfilled too and is deliberately not the day named - it hasn't closed yet, and
+    // the user is checking in as we ask, so calling it a miss would be a lie.
     expect(await getReflectionPrompt(weekly("w", 7), U)).toMatchObject({
       reason: "week-behind",
+      date: "2026-08-25",
       required: true,
     });
   });
@@ -183,9 +198,70 @@ describe("getReflectionPrompt - weekly goals", () => {
     seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
     expect(await getReflectionPrompt(weekly("w", 3), U)).toEqual({
       reason: "week-missed",
+      date: "2026-08-23", // Sunday, the last day of last week that went unfilled
       completed: 2,
       target: 3,
       required: true,
+    });
+  });
+
+  // Which day gets named. A week's arithmetic isn't answerable, so the prompt points at one day
+  // of it - and where the habit has a schedule, that day has to be a day it was scheduled on.
+  it("names the last missed nudge day rather than the last day of the week", async () => {
+    // 1x/week on Wednesdays, nothing done last week. Sunday is the last unfilled day, but
+    // Wednesday is the day that was actually asked for.
+    seedCheckIns("w", []);
+    expect(await getReflectionPrompt(weekly("w", 1, [3]), U)).toMatchObject({
+      reason: "week-missed",
+      date: "2026-08-19",
+    });
+  });
+
+  it("falls back to any unfilled day for a habit with no nudge days set", async () => {
+    // Same data, no schedule to appeal to - several habits leave nudgeDays empty, and one of
+    // them saying nothing at all would be worse than naming the week's last open day.
+    seedCheckIns("w", []);
+    expect(await getReflectionPrompt(weekly("w", 1), U)).toMatchObject({
+      reason: "week-missed",
+      date: "2026-08-23",
+    });
+  });
+
+  it("falls back to any unfilled day when every scheduled day was filled", async () => {
+    // 3x/week nudging Mon only, done Mon. The schedule was kept and the target still wasn't,
+    // so insisting on a missed nudge day would leave nothing to name.
+    seedCheckIns("w", [lastWeekDay(0)]);
+    expect(await getReflectionPrompt(weekly("w", 3, [1]), U)).toMatchObject({
+      reason: "week-missed",
+      date: "2026-08-23",
+    });
+  });
+
+  it("never names a paused day, even though nothing was logged on it", async () => {
+    // Tuesday was vacation, so it's not a miss - Monday is the last day actually expected.
+    seedCheckIns("w", [shift("2026-08-26", -30)]);
+    fakeRedis.seed(`${U}:settings:vacation`, [
+      { startDate: weekDay(1), endDate: weekDay(1), goalIds: ["w"] },
+    ]);
+    expect(await getReflectionPrompt(weekly("w", 7), U)).toMatchObject({
+      reason: "week-behind",
+      date: "2026-08-24",
+    });
+  });
+
+  it("keeps the week's counts when the week is behind before any day has closed", async () => {
+    // Mon and Tue both paused, so this week is already out of slack with not one closed day in
+    // it to point at. There's no honest day to name, and the arithmetic is what's left.
+    seedCheckIns("w", [shift("2026-08-26", -30)]);
+    fakeRedis.seed(`${U}:settings:vacation`, [
+      { startDate: weekDay(0), endDate: weekDay(1), goalIds: ["w"] },
+    ]);
+    expect(await getReflectionPrompt(weekly("w", 7), U)).toMatchObject({
+      reason: "week-behind",
+      date: null,
+      completed: 0,
+      target: 5,
+      daysLeft: 5,
     });
   });
 
@@ -245,11 +321,11 @@ describe("a saved reflection reaches the history grid", () => {
   const TODAY = "2026-08-26";
 
   it("comes back against the day it was written, even though that day is completed", async () => {
-    // The normal weekly flow: the prompt appears, the user writes, and then the check-in the
-    // prompt was gating goes through - all on the same day. `getReflectionDateKey` files a
-    // weekly reflection under that day, so the reflection and the check-in land on one period.
-    // The grid used to look reflections up only for *missed* days, which meant every reflection
-    // a weekly habit ever collected was dropped on the floor.
+    // A weekly reflection saved with no prompt outstanding still falls back to today, and then
+    // the check-in it was gating goes through on that same day. So a reflection and a completed
+    // day can share a period, and the grid has to show both.
+    // It used to look reflections up only for *missed* days, which meant every reflection a
+    // weekly habit collected on a day it completed was dropped on the floor.
     fakeRedis.seed(`${U}:goals`, [weekly("w", 6)]);
     await saveReflection("w", "Work had early meetings", U);
     await addCheckIn("w", TODAY, U);

@@ -50,10 +50,15 @@ function fmt(minutes: number): string {
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 }
 
+/**
+ * One cron tick. `hhmm` past 24:00 rolls into the small hours of the next calendar day, which is
+ * how a ladder belonging to TODAY gets ticked after midnight - the route has to work that out
+ * for itself from the wall clock, exactly as it does in production.
+ */
 async function tickAt(hhmm: string) {
-  const [h, m] = hhmm.split(":").map(Number);
+  const min = toMin(hhmm);
   // PDT is UTC-7, and Date handles the rollover into the next UTC day for evening PST times.
-  vi.setSystemTime(new Date(Date.UTC(2026, 7, 26, h + 7, m)));
+  vi.setSystemTime(new Date(Date.UTC(2026, 7, 26, 7 + Math.floor(min / 60), min % 60)));
   await POST(
     new Request("http://localhost/api/nudge/dispatch", {
       method: "POST",
@@ -62,10 +67,18 @@ async function tickAt(hhmm: string) {
   );
 }
 
-/** Runs the real cron cadence - every 10 minutes, 8am to 11pm PST - and logs what went out. */
-async function runDay(): Promise<string[]> {
+/**
+ * Runs the real cron cadence and logs what went out. The window is round the clock because a
+ * habit may nudge at any hour and its ladder can run an hour or so past midnight - the schedule
+ * used to stop at 11pm, which silently dropped every step a late habit had after it.
+ *
+ * Ticks past midnight are logged as "24:10" rather than "00:10" so a transcript sorts and reads
+ * in ladder order, which is the same reason lib/nudges.ts counts in minutes rather than clock
+ * strings.
+ */
+async function runDay(untilHHMM = "26:00"): Promise<string[]> {
   const log: string[] = [];
-  for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+  for (let m = toMin("08:00"); m <= toMin(untilHHMM); m += 10) {
     const at = fmt(m);
     const seen = { t: texts.length, c: calls.length };
     await tickAt(at);
@@ -230,45 +243,31 @@ describe("carrier opt-out keywords", () => {
   // improvise, and "stop" or "cancel" are the obvious things to improvise.
   it("names a harmless word rather than inviting a free-form reply", async () => {
     await runDay();
-    expect(texts[0].body).toContain(`Reply "pause" to mute today's nudges.`);
+    expect(texts[0].body).toContain(`Reply "pause" to mute these for today.`);
+  });
+
+  // "these", not "today's nudges": the reply only mutes the habits the text just listed, and
+  // copy that promised the whole day would be quiet is how the scope confusion started.
+  it("does not promise more quiet than a reply actually buys", async () => {
+    await runDay();
+    expect(texts[0].body).not.toContain("today's nudges");
   });
 });
 
-describe("snoozing", () => {
-  // The whole point of the design: a snooze is a mute button on your own phone, not an exit
-  // from the accountability. Only finishing the habit stops step 5.
-  // With everything snoozed no call is placed at all, so there's no last-attempt time to hang
-  // the countdown off - it falls back to the escalation time, and the partner still hears at
-  // DAY_END + 30 exactly as before retries existed.
-  it("silences your own phone but still tells your partner", async () => {
-    fakeRedis.seed(`tester:nudge:snoozed:salad:${TODAY}`, 1);
-    expect(await runDay()).toEqual([`21:20 text→${PARTNER}`]);
+describe("muting a habit for the day", () => {
+  // A mute is a full exit for that habit: no more texts, no call, and no partner alert either.
+  // It is not a mute button that leaves the accountability running - the user answered, and
+  // what they answered about is finished for the day.
+  it("ends that habit's day outright, partner alert included", async () => {
+    fakeRedis.seed(`tester:nudge:muted:salad:${TODAY}`, 1);
+    expect(await runDay()).toEqual([]);
   });
 
-  it("snoozing mid-evening drops the remaining texts and the call", async () => {
+  it("muting mid-evening drops the remaining texts, the call and the partner alert", async () => {
     const log: string[] = [];
     for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
       const at = fmt(m);
-      if (at === "19:00") fakeRedis.seed(`tester:nudge:snoozed:salad:${TODAY}`, 1);
-      const seen = { t: texts.length, c: calls.length };
-      await tickAt(at);
-      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
-      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
-    }
-    expect(log).toEqual([`18:00 text→${PHONE}`, `21:20 text→${PARTNER}`]);
-  });
-});
-
-// Answering the text is treated exactly like answering the phone: the escalation's job was to
-// reach a person, and a reply proves it did. Deliberately a much weaker bar than a snooze -
-// "ok" clears it - and unlike a snooze it does silence the partner alert too.
-describe("replying to a text", () => {
-  it("ends the whole day - no more texts, no call, no partner", async () => {
-    const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
-      const at = fmt(m);
-      // Replying just after the first text lands.
-      if (at === "18:10") fakeRedis.seed(`tester:nudge:replied:${TODAY}`, "18:05");
+      if (at === "19:00") fakeRedis.seed(`tester:nudge:muted:salad:${TODAY}`, 1);
       const seen = { t: texts.length, c: calls.length };
       await tickAt(at);
       for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
@@ -277,9 +276,49 @@ describe("replying to a text", () => {
     expect(log).toEqual([`18:00 text→${PHONE}`]);
   });
 
-  it("silences the ladder even when the reply arrives before any nudge went out", async () => {
-    fakeRedis.seed(`tester:nudge:replied:${TODAY}`, "09:00");
-    expect(await runDay()).toEqual([]);
+  // The bug this scoping exists for, reproduced from the day it happened: a ⛰️ Nature nudge went
+  // out at 11:00, "Pause" came back at 11:56, and 📝 Video Journal - whose nudge time is 21:00 and
+  // which had therefore not said a word yet - went silent for the rest of the day.
+  it("leaves a habit alone when it wasn't nudging yet at the time of the reply", async () => {
+    fakeRedis.seed("tester:goals", [
+      { ...salad, id: "nature", name: "Nature", nudgeTime: "11:00" },
+      { ...salad, id: "journal", name: "Video Journal", nudgeTime: "21:00" },
+    ]);
+    const log: string[] = [];
+    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+      const at = fmt(m);
+      // "Pause" at 11:56 answers the 11:00 Nature text, and nothing else - Video Journal's
+      // ladder does not open until 21:00.
+      if (at === "12:00") fakeRedis.seed(`tester:nudge:muted:nature:${TODAY}`, 1);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `11:00 text→${PHONE}`, // Nature's first and only text
+      `21:00 text→${PHONE}`, // Video Journal's ladder, untouched by the 11:56 reply
+      `21:20 text→${PHONE}`,
+      `21:40 text→${PHONE}`,
+      `21:50 call→${PHONE}`,
+      `22:00 call→${PHONE}`,
+      `22:10 call→${PHONE}`,
+      `22:40 text→${PARTNER}`,
+    ]);
+    // And the habit the user actually answered about is the only one left out of the alert.
+    expect(texts.at(-1)!.body).toBe("📢 Tester didn't finish today: 🥗 Video Journal");
+  });
+
+  it("names only the still-live habits when several are running and one is muted", async () => {
+    fakeRedis.seed("tester:goals", [
+      { ...salad, id: "nature", name: "Nature", nudgeTime: "18:00" },
+      { ...salad, id: "journal", name: "Video Journal", nudgeTime: "18:00" },
+    ]);
+    fakeRedis.seed(`tester:nudge:muted:nature:${TODAY}`, 1);
+    await runDay();
+    expect(texts[0].body).toContain("Video Journal");
+    expect(texts[0].body).not.toContain("Nature");
+    expect(calls[0].script).toContain("1 habit open today: Video Journal.");
   });
 });
 
@@ -309,15 +348,18 @@ describe("per-habit scheduling", () => {
   // Regression: when the call was a single per-user ladder pinned near DAY_END, reaching that
   // cutoff short-circuited the text block, so a habit configured past it got neither a text nor
   // a call and went silent all day. Per-habit ladders remove the cutoff entirely.
-  it("still nudges and calls a habit configured past DAY_END", async () => {
+  it("gives a habit configured past DAY_END a full ladder, not a truncated one", async () => {
     fakeRedis.seed("tester:goals", [{ ...salad, name: "Piano Session", nudgeTime: "22:30" }]);
-    // One text rather than three - nudgeSlots can't divide a span that has already closed - and
-    // then its own call ladder a tick later.
+    // Three texts at the 20-minute floor rather than the single reminder a closed span used to
+    // collapse to, then its own call ladder, then the partner - the last two after midnight.
     expect(await runDay()).toEqual([
       `22:30 text→${PHONE}`,
-      `22:40 call→${PHONE}`,
-      `22:50 call→${PHONE}`,
-      `23:00 call→${PHONE}`,
+      `22:50 text→${PHONE}`,
+      `23:10 text→${PHONE}`,
+      `23:20 call→${PHONE}`,
+      `23:30 call→${PHONE}`,
+      `23:40 call→${PHONE}`,
+      `24:10 text→${PARTNER}`, // 00:10 the following morning
     ]);
   });
 
@@ -329,7 +371,7 @@ describe("per-habit scheduling", () => {
     const log = await runDay();
     expect(log).toContain(`20:50 call→${PHONE}`); // Salad's ladder
     expect(log).toContain(`22:30 text→${PHONE}`); // Piano's first text, long after
-    expect(log).toContain(`22:40 call→${PHONE}`); // and its own ladder after that
+    expect(log).toContain(`23:20 call→${PHONE}`); // and its own ladder after that
   });
 
   it("merges habits whose calls fall due on the same tick into one call", async () => {
@@ -353,6 +395,79 @@ describe("per-habit scheduling", () => {
       `22:10 call→${PHONE}`,
       `22:40 text→${PARTNER}`,
     ]);
+  });
+});
+
+// A habit can be set to nudge at any hour, so its ladder can outrun the calendar day that
+// started it. The ladder is anchored to that nudge day rather than to whatever date the clock
+// happens to show, which is what keeps the steps in order across midnight - and, just as
+// importantly, keeps the *next* day from inheriting them.
+describe("a ladder that runs past midnight", () => {
+  const late = { ...salad, id: "journal", name: "Video Journal", nudgeTime: "23:30" };
+
+  it("finishes the ladder it started, hours into the next date", async () => {
+    fakeRedis.seed("tester:goals", [late]);
+    expect(await runDay()).toEqual([
+      `23:30 text→${PHONE}`,
+      `23:50 text→${PHONE}`,
+      `24:10 text→${PHONE}`, // 00:10 - the third text, on the next calendar date
+      `24:20 call→${PHONE}`,
+      `24:30 call→${PHONE}`,
+      `24:40 call→${PHONE}`,
+      `25:10 text→${PARTNER}`, // 01:10
+    ]);
+  });
+
+  // The check the whole anchoring exists to make possible. Checking in at 23:55 belongs to the
+  // 23:30 habit's own day, so the 00:20 call must not happen - reading "today" off the wall
+  // clock after midnight would find a fresh, empty day and ring anyway.
+  it("stops when the habit is checked in before midnight", async () => {
+    fakeRedis.seed("tester:goals", [late]);
+    const log: string[] = [];
+    for (let m = toMin("23:00"); m <= toMin("26:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "24:00") fakeRedis.seed(`tester:checkin:journal:${TODAY}`, 1);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([`23:30 text→${PHONE}`, `23:50 text→${PHONE}`]);
+  });
+
+  it("lets a reply after midnight end the ladder it was answering", async () => {
+    fakeRedis.seed("tester:goals", [late]);
+    const log: string[] = [];
+    for (let m = toMin("23:00"); m <= toMin("26:00"); m += 10) {
+      const at = fmt(m);
+      // Muted under TODAY - the nudge day the ladder belongs to, not the date on the clock.
+      if (at === "24:20") fakeRedis.seed(`tester:nudge:muted:journal:${TODAY}`, 1);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([`23:30 text→${PHONE}`, `23:50 text→${PHONE}`, `24:10 text→${PHONE}`]);
+  });
+
+  // The expensive way to get the lookback wrong: reconsider *every* habit missed yesterday once
+  // the clock passes midnight. Their ladders are long finished and every slot reads as past, so
+  // each would immediately owe a second partner alert for a day that already had one.
+  it("doesn't reopen an ordinary evening habit's ladder after midnight", async () => {
+    // Salad nudges at 18:00 and its ladder is done by 21:40. Run the whole day, then keep
+    // ticking into the small hours.
+    const log = await runDay();
+    expect(log.filter((l) => l.includes(PARTNER))).toEqual([`21:40 text→${PARTNER}`]);
+    expect(log.filter((l) => toMin(l.slice(0, 5)) >= toMin("24:00"))).toEqual([]);
+  });
+
+  it("starts the new day's ladder without help from the old one", async () => {
+    fakeRedis.seed("tester:goals", [{ ...salad, nudgeTime: "09:00" }]);
+    await runDay("26:00");
+    const before = texts.length;
+    // 09:00 the next morning: a fresh day, and the habit is pending again.
+    await tickAt(`${24 + 9}:00`);
+    expect(texts.length).toBe(before + 1);
   });
 });
 

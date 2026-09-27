@@ -78,8 +78,13 @@ export type ReflectionReason =
   // Daily goal: every recent missed day it hasn't been asked about yet, oldest first. A run of
   // misses is one prompt covering all of them, not one prompt for the last day of the run.
   | { reason: "missed-day"; dates: string[] }
-  | { reason: "week-behind"; completed: number; target: number; daysLeft: number } // weekly goal, out of slack
-  | { reason: "week-missed"; completed: number; target: number };                  // weekly goal, last week closed short
+  // Weekly goals. `date` is the one day the prompt is actually about - the most recent day of
+  // the week in question that was expected and didn't happen - so a weekly habit asks the same
+  // concrete question a daily one does instead of handing back a week's arithmetic. It's null
+  // only when no such day exists yet (a week that's fallen behind before any day has closed),
+  // which is the one case that still has to fall back to the counts.
+  | { reason: "week-behind"; date: string | null; completed: number; target: number; daysLeft: number }
+  | { reason: "week-missed"; date: string | null; completed: number; target: number };
 
 export type ReflectionPrompt = ReflectionReason & {
   // Whether the reflection has to be written before the check-in goes through. Required once
@@ -89,11 +94,22 @@ export type ReflectionPrompt = ReflectionReason & {
   required: boolean;
 };
 
-export interface GoalStatus extends Goal {
+/**
+ * Everything getPendingNudges needs to judge a habit, and nothing else. The ladder asks only
+ * "how much of this period is done, and was anything logged on the day itself" - not for a
+ * streak, a reflection prompt or a graduation offer, all of which cost Redis reads a cron tick
+ * has no use for. Splitting it out also lets the nudge day be a date other than today, which
+ * GoalStatus (always "now") can't express.
+ */
+export interface NudgeCandidate extends Goal {
   completedThisPeriod: number;
+  /** Check-ins on the nudge day itself, which is what stops a weekly habit nudging twice. */
+  todayCount: number;
+}
+
+export interface GoalStatus extends NudgeCandidate {
   isDone: boolean;
   streak: number;
-  todayCount: number;
   reflection: ReflectionPrompt | null;
   // The run is long enough to offer graduation and the user hasn't waved the offer off yet.
   // Always false for an already-graduated habit - there's nothing left to suggest.

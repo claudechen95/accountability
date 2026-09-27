@@ -31,13 +31,16 @@ const goals: Goal[] = [
   { id: "dailyok", name: "Did it yesterday (no prompt)", emoji: "😴", frequency: "daily", targetCount: 1, nudgeNumber: 2 },
   { id: "zeroslack", name: `Zero slack ${daysLeft}x/wk (optional)`, emoji: "🏋️", frequency: "weekly", targetCount: daysLeft, nudgeNumber: 3 },
   { id: "shortweek", name: "Last week 2/3 (required)", emoji: "🎹", frequency: "weekly", targetCount: 3, nudgeNumber: 4 },
-  { id: "slack", name: "Plenty of slack (no prompt)", emoji: "🧘", frequency: "weekly", targetCount: 3, nudgeNumber: 5 },
-  { id: "eligible", name: "30-day run (offer graduation)", emoji: "💊", frequency: "daily", targetCount: 1, nudgeNumber: 6 },
-  { id: "grad1", name: "Already graduated", emoji: "🦷", frequency: "daily", targetCount: 1, nudgeNumber: 7, graduatedAt: shift(today, -20), graduatedRun: 142 },
-  { id: "grad2", name: "Also graduated", emoji: "💧", frequency: "weekly", targetCount: 2, nudgeNumber: 8, graduatedAt: shift(today, -5), graduatedRun: 9 },
+  // 1x/week on Wednesdays, missed. The prompt must name Wednesday, not the last open day of the
+  // week - the whole point of preferring nudgeDays over "whatever day the week ended on".
+  { id: "scheduled", name: "1x/wk on Wed, missed (required)", emoji: "🏃", frequency: "weekly", targetCount: 1, nudgeDays: [3], nudgeNumber: 5 },
+  { id: "slack", name: "Plenty of slack (no prompt)", emoji: "🧘", frequency: "weekly", targetCount: 3, nudgeNumber: 6 },
+  { id: "eligible", name: "30-day run (offer graduation)", emoji: "💊", frequency: "daily", targetCount: 1, nudgeNumber: 7 },
+  { id: "grad1", name: "Already graduated", emoji: "🦷", frequency: "daily", targetCount: 1, nudgeNumber: 8, graduatedAt: shift(today, -20), graduatedRun: 142 },
+  { id: "grad2", name: "Also graduated", emoji: "💧", frequency: "weekly", targetCount: 2, nudgeNumber: 9, graduatedAt: shift(today, -5), graduatedRun: 9 },
   // Graduated further back than the history grid is wide, which is the case that used to render
   // as a blank grid reading 0%. Its run sits entirely outside a today-anchored window.
-  { id: "gradold", name: "Graduated long ago", emoji: "📚", frequency: "daily", targetCount: 1, nudgeNumber: 9, graduatedAt: shift(today, -120), graduatedRun: 60 },
+  { id: "gradold", name: "Graduated long ago", emoji: "📚", frequency: "daily", targetCount: 1, nudgeNumber: 10, graduatedAt: shift(today, -120), graduatedRun: 60 },
 ];
 
 const checkins: Record<string, string[]> = {
@@ -45,6 +48,8 @@ const checkins: Record<string, string[]> = {
   dailyok: [shift(today, -1)],
   zeroslack: [lastWeekDay(0), lastWeekDay(1), lastWeekDay(2), lastWeekDay(3), lastWeekDay(4), lastWeekDay(5), lastWeekDay(6)],
   shortweek: [lastWeekDay(0), lastWeekDay(1)],
+  // Last done a fortnight ago, so last week is a clean miss with a Wednesday in it.
+  scheduled: [shift(monday, 2 - 14)],
   slack: [lastWeekDay(0), lastWeekDay(2), lastWeekDay(4), weekDay(0)],
   // Yesterday back 30 days: a 30-day run, past the 28-day bar, with today still open.
   eligible: Array.from({ length: 30 }, (_, i) => shift(today, -(i + 1))),

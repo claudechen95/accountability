@@ -231,13 +231,17 @@ function HabitForm({
               type="time"
               value={nudgeTime}
               onChange={(e) => setNudgeTime(e.target.value)}
-              // Past 9pm there's no room left to fit three reminders before the 10pm call.
-              max="21:00"
+              // Uncapped. It used to stop at 21:00, because past that there was no span left to
+              // divide into three reminders before the 10pm call - a late habit collapsed to a
+              // single text. The schedule now falls back to 20-minute spacing and runs the
+              // ladder on into the small hours instead, so any hour is a real choice.
               className="border border-gray-200 rounded-xl px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-300"
             />
           </div>
           <p className="text-xs text-gray-400 mt-1.5">
-            3 texts, spread from then until 10pm, then a call.
+            {nudgeTime > "21:00"
+              ? "3 texts, 20 min apart, then a call - carrying past midnight if it has to."
+              : "3 texts, spread from then until 10pm, then a call."}
           </p>
         </div>
       )}
@@ -363,20 +367,23 @@ function joinList(items: string[]): string {
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-// What the prompt actually says, which depends on why we're asking. A weekly habit isn't
-// "missed" because of one skipped day, so it gets the arithmetic that made us ask instead.
+// What the prompt actually says, which depends on why we're asking. Every version of it points
+// at a specific day, daily and weekly alike: "last week you got 5 of 6" is a scoreboard, and a
+// week isn't a thing anyone can account for, whereas "Sunday you missed this" is a question with
+// an answer. The week's arithmetic is only reached for when there's no day to name yet.
 function reflectionPromptText(prompt: ReflectionPrompt): ReactNode {
   const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
+  const weekdayOf = (date: string) =>
+    new Date(date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" });
 
   if (prompt.reason === "missed-day") {
     // One day reads better as a weekday ("Sunday you missed this") than as a date; a run of them
     // needs dates to be legible at all. Only the most recent few are named - a fortnight's
     // backlog listed in full is a wall of dates nobody reads - with the count carrying the rest.
     if (prompt.dates.length === 1) {
-      const weekday = new Date(prompt.dates[0] + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" });
       return (
         <>
-          <span className="font-medium">{weekday}</span> you missed this. What got in the way?
+          <span className="font-medium">{weekdayOf(prompt.dates[0])}</span> you missed this. What got in the way?
         </>
       );
     }
@@ -394,7 +401,13 @@ function reflectionPromptText(prompt: ReflectionPrompt): ReactNode {
   }
 
   if (prompt.reason === "week-missed") {
-    return (
+    // No day to name means the whole of last week was paused or the habit is brand new, neither
+    // of which reaches here - but the count is still the honest thing to say if it ever does.
+    return prompt.date ? (
+      <>
+        <span className="font-medium">{weekdayOf(prompt.date)}</span> you missed this. What got in the way?
+      </>
+    ) : (
       <>
         Last week you got <span className="font-medium">{prompt.completed} of {prompt.target}</span>.
         What got in the way?
@@ -403,15 +416,31 @@ function reflectionPromptText(prompt: ReflectionPrompt): ReactNode {
   }
 
   const behind = prompt.target - prompt.completed > prompt.daysLeft;
+  // A week can be out of slack before any of its days have closed - a 7x/week habit is behind on
+  // Monday morning - and then there's genuinely no missed day yet, only arithmetic.
+  if (!prompt.date) {
+    return behind ? (
+      <>
+        You’re at <span className="font-medium">{prompt.completed} of {prompt.target}</span> this week
+        with only {days(prompt.daysLeft)} left - this one’s out of reach now. What got in the way?
+      </>
+    ) : (
+      <>
+        You’re at <span className="font-medium">{prompt.completed} of {prompt.target}</span> this week
+        with {days(prompt.daysLeft)} left - every remaining day has to count. What’s getting in the way?
+      </>
+    );
+  }
+
   return behind ? (
     <>
-      You’re at <span className="font-medium">{prompt.completed} of {prompt.target}</span> this week
-      with only {days(prompt.daysLeft)} left - this one’s out of reach now. What got in the way?
+      <span className="font-medium">{weekdayOf(prompt.date)}</span> you missed this, and this week’s
+      out of reach now. What got in the way?
     </>
   ) : (
     <>
-      You’re at <span className="font-medium">{prompt.completed} of {prompt.target}</span> this week
-      with {days(prompt.daysLeft)} left - every remaining day has to count. What’s getting in the way?
+      <span className="font-medium">{weekdayOf(prompt.date)}</span> you missed this, and every
+      remaining day this week has to count now. What’s getting in the way?
     </>
   );
 }

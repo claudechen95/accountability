@@ -1,6 +1,10 @@
 import { Redis } from "@upstash/redis";
-import type { Goal, GoalStatus, CheckInRecord, WeeklyNote, MoodEntry, ReflectionPrompt, TargetChange } from "./types";
+import type { Goal, GoalStatus, NudgeCandidate, CheckInRecord, WeeklyNote, MoodEntry, ReflectionPrompt, TargetChange } from "./types";
 import { sameTarget } from "./target-history";
+import { CARRYOVER_WINDOW_MIN, toMinutes } from "./nudges";
+import { addDaysToDateStr, dayOfWeek } from "./dates";
+
+export { addDaysToDateStr };
 import { HIDEABLE_TABS } from "./tabs";
 import { instrumentRedis, span } from "./perf";
 import { cached, peek, prime, invalidate } from "./request-cache";
@@ -71,12 +75,6 @@ export interface VacationWindow {
   goalIds: string[]; // only these habits are paused by this window
 }
 
-function addDaysToDateStr(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + days, 12));
-  return [dt.getUTCFullYear(), String(dt.getUTCMonth() + 1).padStart(2, "0"), String(dt.getUTCDate()).padStart(2, "0")].join("-");
-}
-
 function isVacationDay(dateStr: string, windows: VacationWindow[], goalId: string): boolean {
   return windows.some((w) => w.goalIds.includes(goalId) && w.startDate <= dateStr && dateStr <= w.endDate);
 }
@@ -90,10 +88,12 @@ async function getVacationWindows(userId?: string): Promise<VacationWindow[]> {
   return stored ?? [];
 }
 
-export async function getActiveVacation(userId?: string): Promise<VacationWindow | null> {
-  const today = getTodayDate();
+// `date` defaults to today; the nudge dispatch passes an explicit one so a ladder still running
+// after midnight is judged against the vacation state of the day it started on.
+export async function getActiveVacation(userId?: string, date?: string): Promise<VacationWindow | null> {
+  const on = date ?? getTodayDate();
   const windows = await getVacationWindows(userId);
-  return windows.find((w) => w.startDate <= today && today <= w.endDate) ?? null;
+  return windows.find((w) => w.startDate <= on && on <= w.endDate) ?? null;
 }
 
 // A window scheduled to start later — not yet in effect, so it doesn't pause anything yet.
@@ -146,14 +146,34 @@ function secondsUntilMidnightPST(): number {
   return Math.ceil((86400000 - msSinceMidnight) / 1000);
 }
 
-// Snoozed per-goal (not per-user) — a reply naming a specific habit only silences that habit;
-// see app/api/nudge/inbound/route.ts for how a reply is matched to the goal(s) it's about.
-export async function getNudgeSnoozed(userId: string | undefined, goalId: string, date: string): Promise<boolean> {
-  return !!(await kv.get(k(userId, `nudge:snoozed:${goalId}:${date}`)));
+/**
+ * How long a nudge claim has to survive. Not midnight: a habit nudging at 23:30 is still being
+ * called about at 00:10 and still owes its partner an alert at 01:00, all of it filed under the
+ * date the evening started on. Expiring at midnight would drop that ladder's "already sent"
+ * record mid-flight, and the next tick would cheerfully start it again from slot 0.
+ *
+ * Carries the same CARRYOVER_WINDOW_MIN the dispatch route stops looking back at, so the keys
+ * outlive the last tick that can read them by exactly the margin they need and no more.
+ */
+function nudgeClaimTtl(): number {
+  return secondsUntilMidnightPST() + CARRYOVER_WINDOW_MIN * 60;
 }
 
-export async function setNudgeSnoozed(userId: string | undefined, goalId: string, date: string): Promise<void> {
-  await kv.set(k(userId, `nudge:snoozed:${goalId}:${date}`), 1, { ex: secondsUntilMidnightPST() });
+// "This habit is finished nudging for today." Set when the user answers - by text (the inbound
+// webhook) or by picking up the phone (the dispatch route) - and it's a full exit for that
+// habit: no further texts, no calls, and no place in the partner alert.
+//
+// Keyed per goal, and that is the whole point. The flag it replaced was per *user*, so a reply
+// to a habit nudging at 11am silenced a habit that wouldn't have said a word until 9pm - which
+// is not something the user can have meant, since that habit hadn't asked them anything yet.
+// Answering mutes what was actually asking at the time; anything whose nudge time is still
+// ahead runs its own ladder later, untouched.
+export async function isNudgeMuted(userId: string | undefined, goalId: string, date: string): Promise<boolean> {
+  return !!(await kv.get(k(userId, `nudge:muted:${goalId}:${date}`)));
+}
+
+export async function setNudgeMuted(userId: string | undefined, goalId: string, date: string): Promise<void> {
+  await kv.set(k(userId, `nudge:muted:${goalId}:${date}`), 1, { ex: nudgeClaimTtl() });
 }
 
 // Atomically claims one of a habit's three text slots for the day (slot times come from
@@ -169,37 +189,41 @@ export async function claimNudgeSlot(
 ): Promise<boolean> {
   const result = await kv.set(k(userId, `nudge:sent:${goalId}:${date}:${slotIndex}`), 1, {
     nx: true,
-    ex: secondsUntilMidnightPST(),
+    ex: nudgeClaimTtl(),
   });
   return result !== null;
 }
 
-// Claims the once-a-day moment the ladder runs out of texts, storing the PST time it happened
-// so the partner alert can be scheduled relative to the real event rather than a hardcoded hour.
-// This is the escalation *step*, not the call: it's claimed even when the call is suppressed
-// (everything snoozed) or impossible (no Twilio credentials), because the partner alert hangs
-// off this timestamp and must not depend on either.
+// Claims the once-a-day moment the ladder runs out of texts, storing *when* it happened so the
+// partner alert can be scheduled relative to the real event rather than a hardcoded hour.
+// This is the escalation *step*, not the call: it's claimed even when the call is impossible
+// (no Twilio credentials), because the partner alert hangs off this timestamp and must not
+// depend on a call having been placed.
+//
+// `atMin` - here and on every call attempt below - is minutes from midnight of the *nudge day*
+// named by `date`, so a step that happens after midnight stores 1450 rather than the "00:10"
+// that would sort before everything else in its own ladder. See the header of lib/nudges.ts.
 export async function claimEscalation(
   userId: string | undefined,
   date: string,
-  atHHMM: string
+  atMin: number
 ): Promise<boolean> {
-  const result = await kv.set(k(userId, `nudge:escalated:${date}`), atHHMM, {
+  const result = await kv.set(k(userId, `nudge:escalated:${date}`), atMin, {
     nx: true,
-    ex: secondsUntilMidnightPST(),
+    ex: nudgeClaimTtl(),
   });
   return result !== null;
 }
 
-export async function getEscalationTime(userId: string | undefined, date: string): Promise<string | null> {
-  return await kv.get<string>(k(userId, `nudge:escalated:${date}`));
+export async function getEscalationTime(userId: string | undefined, date: string): Promise<number | null> {
+  return await kv.get<number>(k(userId, `nudge:escalated:${date}`));
 }
 
 // One record per call attempt (step 4 rings up to MAX_CALL_ATTEMPTS times). `sid` is filled in
 // after Twilio accepts the call, so a later tick can ask what became of it; it's absent when the
 // claim succeeded but the send then failed.
 export interface CallAttempt {
-  at: string; // HH:MM PST the attempt went out
+  at: number; // minutes from midnight of the nudge day; >= 1440 means after midnight
   sid?: string;
 }
 
@@ -211,11 +235,11 @@ export async function claimCallAttempt(
   goalId: string,
   date: string,
   attempt: number,
-  atHHMM: string
+  atMin: number
 ): Promise<boolean> {
-  const result = await kv.set(k(userId, `nudge:call:${goalId}:${date}:${attempt}`), { at: atHHMM }, {
+  const result = await kv.set(k(userId, `nudge:call:${goalId}:${date}:${attempt}`), { at: atMin }, {
     nx: true,
-    ex: secondsUntilMidnightPST(),
+    ex: nudgeClaimTtl(),
   });
   return result !== null;
 }
@@ -227,11 +251,11 @@ export async function recordCallSid(
   goalId: string,
   date: string,
   attempt: number,
-  atHHMM: string,
+  atMin: number,
   sid: string
 ): Promise<void> {
-  await kv.set(k(userId, `nudge:call:${goalId}:${date}:${attempt}`), { at: atHHMM, sid }, {
-    ex: secondsUntilMidnightPST(),
+  await kv.set(k(userId, `nudge:call:${goalId}:${date}:${attempt}`), { at: atMin, sid }, {
+    ex: nudgeClaimTtl(),
   });
 }
 
@@ -255,42 +279,12 @@ export async function getCallAttempts(
   return attempts;
 }
 
-// Set once a person actually picks up. Unlike a snooze this does end the ladder outright,
-// partner alert included - answering is a live acknowledgement, not a mute button.
-export async function markCallReached(
-  userId: string | undefined,
-  date: string,
-  atHHMM: string
-): Promise<void> {
-  await kv.set(k(userId, `nudge:call-reached:${date}`), atHHMM, { ex: secondsUntilMidnightPST() });
-}
-
-export async function isCallReached(userId: string | undefined, date: string): Promise<boolean> {
-  return !!(await kv.get(k(userId, `nudge:call-reached:${date}`)));
-}
-
-// Set by the inbound webhook on *any* reply, and it stops the whole ladder for the day - the
-// remaining texts, the calls, and the partner alert. This is a deliberately weak bar: a bare
-// "ok" clears it. Answering the text is treated as answering the phone, on the view that the
-// nudge's job is to reach a person and a reply proves it did.
-export async function markReplied(
-  userId: string | undefined,
-  date: string,
-  atHHMM: string
-): Promise<void> {
-  await kv.set(k(userId, `nudge:replied:${date}`), atHHMM, { ex: secondsUntilMidnightPST() });
-}
-
-export async function hasReplied(userId: string | undefined, date: string): Promise<boolean> {
-  return !!(await kv.get(k(userId, `nudge:replied:${date}`)));
-}
-
 // Claims the one "your partner didn't finish" text per user per day. Deliberately separate from
 // the call claim: the call and the alert fire on different ticks, so one key can't gate both.
 export async function claimPartnerAlert(userId: string | undefined, date: string): Promise<boolean> {
   const result = await kv.set(k(userId, `nudge:partner-alerted:${date}`), 1, {
     nx: true,
-    ex: secondsUntilMidnightPST(),
+    ex: nudgeClaimTtl(),
   });
   return result !== null;
 }
@@ -303,6 +297,11 @@ export function getTodayDate(): string {
 }
 
 // "HH:MM" 24hr in PST/PDT, comparable lexicographically against Goal.nudgeTime.
+/** Minutes since PST midnight. The nudge ladder's clock - see the header of lib/nudges.ts. */
+export function getPstMinutesNow(): number {
+  return toMinutes(getPstTimeHHMM());
+}
+
 export function getPstTimeHHMM(): string {
   const now = new Date();
   const hour = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false }).format(now);
@@ -422,12 +421,42 @@ async function getWeeklyDaysCompleted(goalId: string, weekDates: string[], userI
   return (legacy ?? 0) >= 1 ? 1 : 0;
 }
 
-// Unified: completed count for the current period (days for weekly goals, raw count for daily)
-export async function getCompletedThisPeriod(goal: Goal, userId?: string): Promise<number> {
+// Unified: completed count for the period containing `date` (days for weekly goals, raw count
+// for daily). `date` defaults to today - the nudge dispatch is the only caller that passes one,
+// so a ladder that ran past midnight scores the evening it belongs to rather than the fresh day.
+export async function getCompletedThisPeriod(goal: Goal, userId?: string, date?: string): Promise<number> {
+  const on = date ?? getTodayDate();
   if (goal.frequency === "daily") {
-    return getCheckInsForPeriod(goal.id, getTodayDate(), userId);
+    return getCheckInsForPeriod(goal.id, on, userId);
   }
-  return getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(getTodayDate()), userId);
+  return getWeeklyDaysCompleted(goal.id, getWeekDatesForDate(on), userId);
+}
+
+/**
+ * The habits a nudge tick has to judge, scored against one nudge day. Deliberately much
+ * narrower than getGoalStatuses: the ladder needs two counts per habit, where a full status also
+ * walks the streak and builds a reflection prompt - work a cron tick throws away.
+ *
+ * Vacation is resolved for the same date, so a ladder still running at 00:30 isn't suddenly
+ * paused by a vacation window that began at midnight.
+ */
+export async function getNudgeCandidates(date: string, userId?: string): Promise<NudgeCandidate[]> {
+  const [goals, vacation] = await Promise.all([
+    getGoals(userId),
+    getActiveVacation(userId, date),
+  ]);
+  const pausedIds = new Set(vacation?.goalIds ?? []);
+  return Promise.all(
+    goals
+      .filter((g) => !pausedIds.has(g.id) && !isGraduated(g))
+      .map(async (goal) => {
+        const [completedThisPeriod, todayCount] = await Promise.all([
+          getCompletedThisPeriod(goal, userId, date),
+          getCheckInsForPeriod(goal.id, date, userId),
+        ]);
+        return { ...goal, completedThisPeriod, todayCount };
+      })
+  );
 }
 
 // Stable per-user 1..N ids used by text nudges ("reply 2") — reassigned compactly by current
@@ -579,8 +608,9 @@ async function primeDayKeys(goals: Goal[], userId?: string): Promise<void> {
   const thisWeek = getWeekDatesForDate(getTodayDate());
   const lookback = reflectionWindowDates();
   const keys = tracked.flatMap((g) => {
-    // Only daily goals sweep the window; a weekly goal's reflection is filed under the day it
-    // was written and its prompt is judged against the week, so neither reads these.
+    // Only daily goals sweep the window. A weekly goal's prompt is scored against one week and
+    // names a day inside it, so it never looks further back than these seven days - and unlike
+    // the daily one it doesn't check for an existing reflection, so it reads no reflection keys.
     const days =
       g.frequency === "daily"
         ? Array.from(new Set(thisWeek.concat(lookback)))
@@ -1112,16 +1142,66 @@ async function getUnreflectedMissedDays(goal: Goal, userId?: string): Promise<st
 }
 
 /**
+ * The one day a weekly habit's prompt is about: the most recent day of `weekDates` the habit was
+ * expected on and didn't happen.
+ *
+ * A week's arithmetic ("last week you got 5 of 6") is a scoreboard, not a question - there's no
+ * single thing that went wrong in it to answer for. A day is answerable, so the prompt names one.
+ *
+ * Which day counts as *expected* is the wrinkle. `nudgeDays` is the closest a weekly habit has
+ * to a schedule, and where it's set it's the true answer: 🏃 HIIT is 1x/week on Wednesday, so a
+ * week it missed is a Wednesday it missed, and naming Sunday instead would just be reporting
+ * where the week happens to end. But it is only a *reminder* schedule - several habits leave it
+ * empty, and 🎹 Piano asks for 5x/week while nudging on two days - so a habit with no unfilled
+ * nudge day falls back to any unfilled day rather than insisting nothing was missed.
+ *
+ * Today is never a candidate: the day isn't over, so it isn't a miss yet. Neither are vacation
+ * days, for the same reason they're dropped everywhere else - the user was never asked to show
+ * up. That leaves `null` genuinely possible (a week that's already out of reach on the Monday),
+ * and callers have to keep the week's counts for it.
+ */
+async function lastMissedWeekDay(
+  goal: Goal,
+  weekDates: string[],
+  paused: (date: string) => boolean,
+  userId?: string
+): Promise<string | null> {
+  const today = getTodayDate();
+  const candidates = weekDates.filter((date) => date < today && !paused(date));
+  if (candidates.length === 0) return null;
+
+  // Already fetched: this week's keys by `primeDayKeys`, last week's by the `getWeeklyDaysCompleted`
+  // that decided to ask in the first place. So this is a cache hit, not a second round trip.
+  const counts = await readCheckins(goal.id, candidates, userId);
+  const unfilled = candidates.filter((date) => (counts.get(date) ?? 0) === 0);
+  if (unfilled.length === 0) return null;
+
+  const scheduled = unfilled.filter((date) => goal.nudgeDays?.includes(dayOfWeek(date)));
+  return (scheduled.length > 0 ? scheduled : unfilled).at(-1) ?? null;
+}
+
+/**
  * The days a reflection written right now is about.
  *
  * A daily goal's reflection covers every miss the prompt just named, so the same text lands on
  * each of them and the history grid marks the whole run reflected rather than its last day
- * alone. A weekly goal's is about the week, so it stays filed under the day it was written.
- * The yesterday fallback keeps a reflection saved with nothing outstanding (a dismissed prompt
- * re-opened, a stale tab) landing where it always did.
+ * alone. A weekly goal's now names one day too, so it's filed under *that* day rather than the
+ * day it was written - otherwise the grid rings today, which is the day the habit was done, and
+ * leaves the day the text is actually about unmarked.
+ *
+ * Both fall back to the day it was written when there's nothing outstanding to file against (a
+ * dismissed prompt re-opened, a stale tab), which is where a weekly reflection always landed.
+ *
+ * The weekly branch re-asks `getReflectionPrompt` rather than re-deriving which week and which
+ * day - the choice between last week and this one is the prompt's to make, and two copies of it
+ * would drift. It reads pre-check-in state because the client saves the reflection first.
  */
 async function reflectionDateKeys(goal: Goal, userId?: string): Promise<string[]> {
-  if (goal.frequency !== "daily") return [getTodayDate()];
+  if (goal.frequency !== "daily") {
+    const prompt = await getReflectionPrompt(goal, userId);
+    const date = prompt && prompt.reason !== "missed-day" ? prompt.date : null;
+    return [date ?? getTodayDate()];
+  }
   const missed = await getUnreflectedMissedDays(goal, userId);
   return missed.length > 0 ? missed : [getYesterdayDateStr()];
 }
@@ -1184,7 +1264,8 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   const needed = target - completed;
   if (needed > 0 && needed >= daysLeft) {
     // Still winnable if every remaining day lands; only forced once it can't be.
-    return { reason: "week-behind", completed, target, daysLeft, required: needed > daysLeft };
+    const date = await lastMissedWeekDay(goal, weekDates, paused, userId);
+    return { reason: "week-behind", date, completed, target, daysLeft, required: needed > daysLeft };
   }
 
   // Nothing logged yet this week, so this is the first check-in since last week closed out.
@@ -1194,7 +1275,8 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
     if (lastTarget === 0) return null;
     const lastCompleted = await getWeeklyDaysCompleted(goal.id, lastWeekDates, userId);
     if (lastCompleted < lastTarget) {
-      return { reason: "week-missed", completed: lastCompleted, target: lastTarget, required: true };
+      const date = await lastMissedWeekDay(goal, lastWeekDates, paused, userId);
+      return { reason: "week-missed", date, completed: lastCompleted, target: lastTarget, required: true };
     }
   }
 
