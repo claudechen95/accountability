@@ -910,8 +910,9 @@ export async function getGoalHistories(userId?: string): Promise<GoalHistory[]> 
         getTargetHistory(goal.id, userId),
       ]);
 
-      // Reflections are now stored by date key for all goal types
-      const reflections = await getReflectionsForGoal(goal.id, entries.map((e) => e.period), userId);
+      // Keyed by the day the reflection was written, not the day it's about - see
+      // `getReflectionsByWrittenDay`.
+      const reflections = await getReflectionsByWrittenDay(goal.id, entries.map((e) => e.period), userId);
 
       return { goal, entries, streak, reflections, targetHistory };
     })
@@ -1183,11 +1184,12 @@ async function lastMissedWeekDay(
 /**
  * The days a reflection written right now is about.
  *
- * A daily goal's reflection covers every miss the prompt just named, so the same text lands on
- * each of them and the history grid marks the whole run reflected rather than its last day
- * alone. A weekly goal's now names one day too, so it's filed under *that* day rather than the
- * day it was written - otherwise the grid rings today, which is the day the habit was done, and
- * leaves the day the text is actually about unmarked.
+ * These are storage keys, and what they buy is that a day asked and answered is never raised
+ * again: `getUnreflectedMissedDays` drops any day carrying a reflection, so a daily goal's text
+ * has to land on *every* miss the prompt just named or the rest come back tomorrow. A weekly
+ * goal's prompt names one day, so it's filed under that day for the same reason. Where a
+ * reflection is *shown* is a separate question with a different answer - the history grid keys
+ * by the day it was written (`getReflectionsByWrittenDay`).
  *
  * Both fall back to the day it was written when there's nothing outstanding to file against (a
  * dismissed prompt re-opened, a stale tab), which is where a weekly reflection always landed.
@@ -1286,19 +1288,19 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
 type StoredReflection = { text: string; savedAt: number } | null;
 
 /**
- * Reflection text by period key, for whichever of `periodKeys` has one.
+ * The stored records for whichever of `periodKeys` has one, keyed by period.
  *
  * Goes through the request cache for the same reason `readCheckins` does: the history page asks
  * per goal and the daily prompt asks for its lookback window, and `primeDayKeys` fetches that
  * window for every habit in one `mget` before either of them runs.
  */
-export async function getReflectionsForGoal(
+async function readReflections(
   goalId: string,
   periodKeys: string[],
   userId?: string
-): Promise<Record<string, string>> {
-  if (periodKeys.length === 0) return {};
-  const result: Record<string, string> = {};
+): Promise<Record<string, { text: string; savedAt: number }>> {
+  const result: Record<string, { text: string; savedAt: number }> = {};
+  if (periodKeys.length === 0) return result;
   const missing: string[] = [];
 
   await Promise.all(
@@ -1306,7 +1308,7 @@ export async function getReflectionsForGoal(
       const hit = peek<StoredReflection>(k(userId, `reflection:${goalId}:${pk}`));
       if (hit) {
         const value = await hit;
-        if (value?.text) result[pk] = value.text;
+        if (value?.text) result[pk] = value;
       } else {
         missing.push(pk);
       }
@@ -1319,8 +1321,70 @@ export async function getReflectionsForGoal(
     missing.forEach((pk, i) => {
       const value = values[i] ?? null;
       prime(keys[i], value);
-      if (value?.text) result[pk] = value.text;
+      if (value?.text) result[pk] = value;
     });
+  }
+  return result;
+}
+
+/** Reflection text by period key, for whichever of `periodKeys` has one. */
+export async function getReflectionsForGoal(
+  goalId: string,
+  periodKeys: string[],
+  userId?: string
+): Promise<Record<string, string>> {
+  const stored = await readReflections(goalId, periodKeys, userId);
+  const result: Record<string, string> = {};
+  for (const pk of Object.keys(stored)) result[pk] = stored[pk].text;
+  return result;
+}
+
+/** A `savedAt` stamp as the PST calendar day it fell on - the day a reflection was written. */
+function writtenDay(savedAt: number): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date(savedAt));
+}
+
+/**
+ * Reflection text by the day it was **written**, for whichever of `windowDates` that lands in.
+ *
+ * Storage keys a reflection by the day it's *about* (`reflectionDateKeys`), because that's what
+ * decides whether a day has been asked and answered. The history grid shows it on the day it was
+ * written instead, which is where the user remembers putting it: they sat down on Sunday and
+ * wrote about Saturday's miss, so Sunday is the day with writing on it. `savedAt` is the record
+ * of that, so this simply re-keys by it.
+ *
+ * Two consequences fall out of the re-keying. It has to read **further back than the window**,
+ * since a reflection written on the window's first day is filed under a miss up to
+ * `REFLECTION_LOOKBACK_DAYS` earlier - one wider `mget`, not another round trip. And one sitting
+ * shows once: a daily reflection filed against a whole run of misses shares one `savedAt`, so the
+ * run's days collapse onto the single day the text was actually written.
+ *
+ * Where two separate reflections were written on the same day (an emotional check-in has two,
+ * both saved on 19 Sep 2026), the later one wins - the same rule a second save on one day
+ * already followed.
+ */
+export async function getReflectionsByWrittenDay(
+  goalId: string,
+  windowDates: string[],
+  userId?: string
+): Promise<Record<string, string>> {
+  if (windowDates.length === 0) return {};
+  const lookback: string[] = [];
+  for (let i = REFLECTION_LOOKBACK_DAYS; i >= 1; i--) {
+    lookback.push(addDaysToDateStr(windowDates[0], -i));
+  }
+  const stored = await readReflections(goalId, [...lookback, ...windowDates], userId);
+
+  const inWindow = new Set(windowDates);
+  const result: Record<string, string> = {};
+  const winner: Record<string, number> = {};
+  for (const pk of Object.keys(stored)) {
+    const { text, savedAt } = stored[pk];
+    if (!savedAt) continue;
+    const day = writtenDay(savedAt);
+    if (!inWindow.has(day) || (winner[day] ?? -1) > savedAt) continue;
+    winner[day] = savedAt;
+    result[day] = text;
   }
   return result;
 }

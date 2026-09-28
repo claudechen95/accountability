@@ -183,10 +183,10 @@ function DailyGrid({
                 const isFuture = entry.period > today;
                 const isToday = entry.period === today;
                 const isMissed = !isFuture && !isToday && !entry.done && !entry.vacation;
-                // A reflection shows wherever it was written, not only on a missed day. A weekly
-                // goal files its reflection under the day it was written (`getReflectionDateKey`),
-                // and that day is checked in seconds later - so gating this on `isMissed` hid
-                // every reflection a weekly habit has ever collected.
+                // Keyed by the day the reflection was *written* (`getReflectionsByWrittenDay`),
+                // which is usually a day the habit was done - the modal writes the text seconds
+                // before the check-in it was gating. So this can't be gated on `isMissed`, which
+                // used to hide every reflection there is.
                 const reflection = reflections[entry.period];
                 const color = isFuture
                   ? "bg-gray-100"

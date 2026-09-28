@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterAll, beforeAll } from "vitest";
 import { vi } from "vitest";
-import { addCheckIn, getGoalHistories, getReflectionPrompt, saveReflection } from "@/lib/kv";
+import {
+  addCheckIn,
+  getGoalHistories,
+  getReflectionPrompt,
+  getReflectionsForGoal,
+  saveReflection,
+} from "@/lib/kv";
 import type { Goal } from "@/lib/types";
 import { fakeRedis } from "./redis-fake";
 
@@ -123,28 +129,33 @@ describe("getReflectionPrompt - daily goals", () => {
 describe("saveReflection", () => {
   const TODAY = "2026-08-26";
 
+  /**
+   * The days a reflection is filed under - which are the days it's *about*, and the days that
+   * therefore can't be asked about again. Read here rather than off the history payload, which
+   * re-keys by the day the text was written.
+   */
+  async function storedDays(goalId: string): Promise<string[]> {
+    const window = Array.from({ length: 21 }, (_, i) => shift(TODAY, i - 20));
+    return Object.keys(await getReflectionsForGoal(goalId, window, U)).sort();
+  }
+
   it("files one daily reflection against every missed day it named", async () => {
     fakeRedis.seed(`${U}:goals`, [daily("d")]);
     seedCheckIns("d", [shift(TODAY, -4)]);
     await saveReflection("d", "Was travelling all week", U);
 
-    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "d")!;
-    expect(Object.keys(history.reflections).sort()).toEqual([
-      "2026-08-23",
-      "2026-08-24",
-      "2026-08-25",
-    ]);
+    expect(await storedDays("d")).toEqual(["2026-08-23", "2026-08-24", "2026-08-25"]);
   });
 
   it("files a weekly reflection against the day its prompt named", async () => {
-    // The prompt asks about last Sunday, so that's what the text is about and that's where the
-    // grid's amber ring belongs. Filing it under today would ring the day the habit was *done*.
+    // The prompt asks about last Sunday, so that's the day the text answers for and the day that
+    // mustn't be raised again. Where it *shows* is a separate question - the grid rings the day
+    // it was written.
     fakeRedis.seed(`${U}:goals`, [weekly("w", 3)]);
     seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
     await saveReflection("w", "Weekend got away from me", U);
 
-    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "w")!;
-    expect(Object.keys(history.reflections)).toEqual(["2026-08-23"]);
+    expect(await storedDays("w")).toEqual(["2026-08-23"]);
   });
 
   it("falls back to yesterday when there's nothing outstanding", async () => {
@@ -154,8 +165,7 @@ describe("saveReflection", () => {
     seedCheckIns("d", [shift(TODAY, -1)]);
     await saveReflection("d", "Nothing outstanding", U);
 
-    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "d")!;
-    expect(Object.keys(history.reflections)).toEqual(["2026-08-25"]);
+    expect(await storedDays("d")).toEqual(["2026-08-25"]);
   });
 });
 
@@ -335,5 +345,34 @@ describe("a saved reflection reaches the history grid", () => {
 
     expect(today.done).toBe(true);
     expect(history.reflections[TODAY]).toBe("Work had early meetings");
+  });
+
+  it("shows on the day it was written, not the days it is about", async () => {
+    // A daily reflection is *stored* against every miss it answers for, so those days can't be
+    // asked about again. The grid shows the one day it was written on instead - that's the day
+    // the user actually sat down and wrote it.
+    fakeRedis.seed(`${U}:goals`, [daily("d")]);
+    seedCheckIns("d", [shift(TODAY, -5)]);
+    await saveReflection("d", "Travelling all week", U);
+
+    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "d")!;
+
+    expect(history.reflections).toEqual({ [TODAY]: "Travelling all week" });
+  });
+
+  it("finds a reflection filed under a day older than the grid but written inside it", async () => {
+    // Stored key and written day can be a fortnight apart, so the read has to reach back past
+    // the window's own first day or a reflection at its left edge goes missing.
+    const windowStart = shift(TODAY, -90);
+    fakeRedis.seed(`${U}:goals`, [daily("d")]);
+    seedCheckIns("d", [shift(TODAY, -95)]);
+    fakeRedis.seed(`${U}:reflection:d:${shift(TODAY, -91)}`, {
+      text: "Wrote this the next morning",
+      savedAt: new Date(`${windowStart}T18:00:00Z`).getTime(),
+    });
+
+    const history = (await getGoalHistories(U)).find((h) => h.goal.id === "d")!;
+
+    expect(history.reflections[windowStart]).toBe("Wrote this the next morning");
   });
 });
