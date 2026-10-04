@@ -184,6 +184,7 @@ interface Goal {
   The window is bounded rather than open-ended because a reflection written in October about a day in June isn't a reflection, and because a dismissed prompt would otherwise re-ask forever.
   Weekly goals are *judged* against the whole week, not a single day: a 3x/week habit skipped on Tuesday with four days still open is not behind and is not asked anything.
   They prompt only when the days still open no longer outnumber the days still needed (`week-behind`), or when nothing is logged yet this week and last week closed below target (`week-missed`, capped at once per week).
+  A knife's edge of exactly one day is exempt: the prompt gates a check-in, and that check-in *is* the one day still needed - the user is finishing the week, not falling behind it. Without this a 1x/week habit done on the week's last day (Screen time Review, nudged on Sunday, done on Sunday) was told every single week that it "missed Saturday".
   Vacation-paused days are dropped from the days remaining and prorate the target down, so a partly-paused week can't be "missed" for days the user was never expected to show up.
 
   **But they ask about one day, not the week.** Both weekly reasons carry a `date`, and the modal says "Sunday you missed this" exactly the way a daily prompt does. "Last week you got 5 of 6" is a scoreboard: a week isn't a thing a person can account for, so it got answers about weeks. A day is answerable.

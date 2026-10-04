@@ -275,6 +275,35 @@ describe("getReflectionPrompt - weekly goals", () => {
     });
   });
 
+  // The knife's edge is only a knife's edge when the check-in being made isn't enough by
+  // itself. These run on Sunday, the one day `needed === daysLeft === 1` is constructible.
+  describe("on the week's last day", () => {
+    beforeAll(() => vi.setSystemTime(new Date("2026-08-30T18:00:00Z")));
+    afterAll(() => vi.setSystemTime(NOW));
+
+    it("says nothing to a 1x/week habit being done on its scheduled day", async () => {
+      // Screen time Review: 1x/week, nudged on Sunday, checked in on Sunday. Doing the habit
+      // exactly on schedule used to read as "behind", naming Saturday as a miss it never was.
+      seedCheckIns("w", [lastWeekDay(6)]);
+      expect(await getReflectionPrompt(weekly("w", 1, [0]), U)).toBeNull();
+    });
+
+    it("says nothing when this check-in alone completes the target", async () => {
+      // 5x/week with 4 done: the user is finishing the week as we ask, not falling behind it.
+      seedCheckIns("w", [weekDay(0), weekDay(1), weekDay(2), weekDay(3)]);
+      expect(await getReflectionPrompt(weekly("w", 5), U)).toBeNull();
+    });
+
+    it("still requires a reflection when one check-in can no longer save the week", async () => {
+      seedCheckIns("w", [lastWeekDay(6)]);
+      // 0 of 2 with only today left: the week is lost whatever happens now.
+      expect(await getReflectionPrompt(weekly("w", 2), U)).toMatchObject({
+        reason: "week-behind",
+        required: true,
+      });
+    });
+  });
+
   it("says nothing when last week hit its target", async () => {
     seedCheckIns("w", [lastWeekDay(0), lastWeekDay(2), lastWeekDay(4)]);
     expect(await getReflectionPrompt(weekly("w", 2), U)).toBeNull();

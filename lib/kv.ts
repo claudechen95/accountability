@@ -1218,7 +1218,9 @@ async function reflectionDateKeys(goal: Goal, userId?: string): Promise<string[]
  * doesn't warrant a prompt. We only ask once the miss actually threatens the target:
  *   - `week-behind` - the days still open this week no longer outnumber the days still
  *     needed, so the target is either on a knife's edge (every remaining day must land) or
- *     already out of reach.
+ *     already out of reach. A knife's edge of one doesn't count: the check-in this prompt
+ *     gates is itself the one day still needed, which is a week being finished, not one in
+ *     trouble - and for a 1x/week habit it's every week that ends on schedule.
  *   - `week-missed` - last week closed below target. Caught on the first check-in of the new
  *     week, which also caps this to once per week. Without it, a week that quietly ends short
  *     would never be reflected on at all, since the user stops checking in before the
@@ -1264,7 +1266,12 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   const target = Math.min(goal.targetCount, weekDates.filter((d) => !paused(d)).length);
   const daysLeft = weekDates.filter((d) => d >= today && !paused(d)).length;
   const needed = target - completed;
-  if (needed > 0 && needed >= daysLeft) {
+  // The prompt fires at check-in, and that check-in counts: with exactly one day still needed
+  // and a day open to land it on, the user is completing the week as we ask, not falling
+  // behind it. A 1x/week habit done on the week's last day - its normal shape - lives entirely
+  // in that case, so without the `needed >= 2` guard it was told it "missed Saturday" every
+  // Sunday it was kept on schedule.
+  if (needed > daysLeft || (needed === daysLeft && needed >= 2)) {
     // Still winnable if every remaining day lands; only forced once it can't be.
     const date = await lastMissedWeekDay(goal, weekDates, paused, userId);
     return { reason: "week-behind", date, completed, target, daysLeft, required: needed > daysLeft };
