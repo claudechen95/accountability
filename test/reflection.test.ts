@@ -247,6 +247,51 @@ describe("getReflectionPrompt - weekly goals", () => {
     });
   });
 
+  // A day asked and answered settles its week. The weekly path used to skip this check: a
+  // behind week re-named its missed Friday on every later day's check-in, and because a
+  // reflection is filed under the day it names, each forced re-answer overwrote the last.
+  const seedReflection = (goalId: string, date: string) =>
+    fakeRedis.seed(`${U}:reflection:${goalId}:${date}`, { text: "already said", savedAt: 1 });
+
+  it("stands down while the day it would name carries a reflection, and re-opens on a new miss", async () => {
+    // The sequence from the bug, Wednesday then Thursday: the week is out of reach and
+    // Tuesday's miss gets answered. The week is still out of reach the next day, but it has
+    // been accounted for - there's no second question until a new day closes unfilled.
+    fakeRedis.seed(`${U}:goals`, [weekly("w", 7)]);
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1), lastWeekDay(2), lastWeekDay(3), lastWeekDay(4), lastWeekDay(5), lastWeekDay(6)]);
+
+    expect(await getReflectionPrompt(weekly("w", 7), U)).toMatchObject({ date: "2026-08-25" });
+    await saveReflection("w", "Tuesday got away from me", U);
+    expect(await getReflectionPrompt(weekly("w", 7), U)).toBeNull();
+
+    // Thursday: Wednesday has now closed unfilled too - a fresh miss since the answer, so a
+    // fresh question, about the fresh day.
+    vi.setSystemTime(new Date("2026-08-27T18:00:00Z"));
+    try {
+      expect(await getReflectionPrompt(weekly("w", 7), U)).toMatchObject({ date: "2026-08-26" });
+    } finally {
+      vi.setSystemTime(NOW);
+    }
+  });
+
+  it("settles on one answer rather than walking back to older unfilled days", async () => {
+    // Monday is also unfilled, but unfilled days aren't individually misses for a weekly habit
+    // - the question is the week's, and Tuesday's reflection answered it. Walking back would
+    // demand a separate essay per empty day of an already-answered week.
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1), lastWeekDay(2), lastWeekDay(3), lastWeekDay(4), lastWeekDay(5), lastWeekDay(6)]);
+    seedReflection("w", "2026-08-25");
+    expect(await getReflectionPrompt(weekly("w", 7), U)).toBeNull();
+  });
+
+  it("does not re-ask at the week's close about a miss answered while it was running", async () => {
+    // 2 of 3 last week, and the day week-missed would name (Sunday) was already reflected on
+    // via week-behind. The close-out isn't a second question - this is the same data as the
+    // week-missed case above, which fires only because its Sunday was never answered.
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
+    seedReflection("w", "2026-08-23");
+    expect(await getReflectionPrompt(weekly("w", 3), U)).toBeNull();
+  });
+
   it("never names a paused day, even though nothing was logged on it", async () => {
     // Tuesday was vacation, so it's not a miss - Monday is the last day actually expected.
     seedCheckIns("w", [shift("2026-08-26", -30)]);

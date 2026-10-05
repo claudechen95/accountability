@@ -1158,27 +1158,40 @@ async function getUnreflectedMissedDays(goal: Goal, userId?: string): Promise<st
  *
  * Today is never a candidate: the day isn't over, so it isn't a miss yet. Neither are vacation
  * days, for the same reason they're dropped everywhere else - the user was never asked to show
- * up. That leaves `null` genuinely possible (a week that's already out of reach on the Monday),
- * and callers have to keep the week's counts for it.
+ * up. That leaves a `null` date genuinely possible (a week that's already out of reach on the
+ * Monday), and callers have to keep the week's counts for it.
+ *
+ * `answered` reports that the day this would name already carries a reflection - and the
+ * callers stand the prompt down on it, because a reflection is filed under the day it names,
+ * so a re-ask forces a re-answer that overwrites the one already given. A behind week used to
+ * re-name its missed Friday on every later day's check-in that way. Standing down on the named
+ * day alone, rather than walking back to older unanswered days, is deliberate: unfilled days
+ * aren't individually misses here (a perfect 3x week still has four empty days - the whole
+ * premise of the weekly rules), so the question is the week's, and one answer settles it. A
+ * *new* miss after the answer becomes the last missed day, unanswered, and re-opens it.
  */
 async function lastMissedWeekDay(
   goal: Goal,
   weekDates: string[],
   paused: (date: string) => boolean,
   userId?: string
-): Promise<string | null> {
+): Promise<{ date: string | null; answered: boolean }> {
   const today = getTodayDate();
   const candidates = weekDates.filter((date) => date < today && !paused(date));
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return { date: null, answered: false };
 
   // Already fetched: this week's keys by `primeDayKeys`, last week's by the `getWeeklyDaysCompleted`
   // that decided to ask in the first place. So this is a cache hit, not a second round trip.
   const counts = await readCheckins(goal.id, candidates, userId);
   const unfilled = candidates.filter((date) => (counts.get(date) ?? 0) === 0);
-  if (unfilled.length === 0) return null;
+  if (unfilled.length === 0) return { date: null, answered: false };
 
   const scheduled = unfilled.filter((date) => goal.nudgeDays?.includes(dayOfWeek(date)));
-  return (scheduled.length > 0 ? scheduled : unfilled).at(-1) ?? null;
+  const date = (scheduled.length > 0 ? scheduled : unfilled).at(-1) ?? null;
+  if (date === null) return { date: null, answered: false };
+
+  const reflections = await getReflectionsForGoal(goal.id, [date], userId);
+  return { date, answered: Boolean(reflections[date]) };
 }
 
 /**
@@ -1230,6 +1243,11 @@ async function reflectionDateKeys(goal: Goal, userId?: string): Promise<string[]
  * remaining, and the target is prorated down so a partly-paused week can't be "missed" for
  * days the user was never asked to show up on.
  *
+ * Either weekly reason stands down once the day it would name already carries a reflection
+ * (`lastMissedWeekDay`'s `answered`) - the weekly form of the asked-and-answered rule the
+ * daily path gets from `getUnreflectedMissedDays`, and load-bearing for the same reason: a
+ * reflection is filed under the day it names, so a re-ask overwrites the previous answer.
+ *
  * `required` marks the prompts the user can't wave away. A period that's already gone -
  * yesterday, a closed-out week, a week whose target is now unreachable - can only be learned
  * from, so writing something is the price of the next check-in. A knife's-edge week is still
@@ -1272,8 +1290,12 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   // in that case, so without the `needed >= 2` guard it was told it "missed Saturday" every
   // Sunday it was kept on schedule.
   if (needed > daysLeft || (needed === daysLeft && needed >= 2)) {
+    const { date, answered } = await lastMissedWeekDay(goal, weekDates, paused, userId);
+    // The miss this would name has been accounted for, and asking again would only overwrite
+    // the answer. The week stays behind, so without this the prompt re-fired on every later
+    // day of it.
+    if (answered) return null;
     // Still winnable if every remaining day lands; only forced once it can't be.
-    const date = await lastMissedWeekDay(goal, weekDates, paused, userId);
     return { reason: "week-behind", date, completed, target, daysLeft, required: needed > daysLeft };
   }
 
@@ -1284,7 +1306,10 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
     if (lastTarget === 0) return null;
     const lastCompleted = await getWeeklyDaysCompleted(goal.id, lastWeekDates, userId);
     if (lastCompleted < lastTarget) {
-      const date = await lastMissedWeekDay(goal, lastWeekDates, paused, userId);
+      const { date, answered } = await lastMissedWeekDay(goal, lastWeekDates, paused, userId);
+      // A week whose miss was reflected on while it was still running (via week-behind) was
+      // answered for in the moment; its close-out isn't a second question.
+      if (answered) return null;
       return { reason: "week-missed", date, completed: lastCompleted, target: lastTarget, required: true };
     }
   }
