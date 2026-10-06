@@ -2,13 +2,21 @@ import { NextResponse } from "next/server";
 import { withPerf } from "@/lib/perf";
 import {
   findUserByPhone,
-  setNudgeMuted,
+  setNudgeSnoozedUntil,
   getNudgeCandidates,
   getTodayDate,
   getPstMinutesNow,
   resolveUser,
 } from "@/lib/kv";
 import { getPendingNudges, crossesMidnight, nudgeAnchors } from "@/lib/nudges";
+import {
+  SNOOZE_HINT,
+  parseSnoozeReply,
+  soonestUntil,
+  formatSnoozeWhen,
+  snoozeUntilOnAnchor,
+  snoozeConfirmation,
+} from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
 
 // Sendblue's inbound-message webhook target, registered via POST /api/account/webhooks with
@@ -38,48 +46,72 @@ async function POSTHandler(req: Request) {
     const user = await findUserByPhone(body.number);
     if (user) {
       const uid = resolveUser(user.id);
-      const reply: string = body.content.trim().toLowerCase();
-
-      // The habits that were actually nudging when the reply came in — which is precisely what
-      // the reply can be an answer to. Sendblue has no reply-to/thread field, so there is no
-      // way to know which outbound message a reply is "about"; the clock is the best available
-      // answer, and it's an honest one, because getPendingNudges already gates a habit out
-      // until its own nudge time has passed.
-      //
-      // Both nudge days are considered, exactly as the dispatch tick considers them: just after
-      // midnight the text the user is replying to may well have come from a ladder that started
-      // yesterday evening, and muting it has to write under *that* day's key or the ladder
-      // carries on calling.
-      const pending: { date: string; goal: { id: string; emoji: string; name: string } }[] = [];
-      for (const a of nudgeAnchors(getPstMinutesNow(), getTodayDate())) {
-        const candidates = await getNudgeCandidates(a.date, uid);
-        const inPlay = a.carryover ? candidates.filter((g) => crossesMidnight(g.nudgeTime)) : candidates;
-        for (const goal of getPendingNudges(inPlay, a.dow, a.nowMin)) pending.push({ date: a.date, goal });
-      }
-
-      // Answering mutes those habits for the rest of the day, whatever the answer says. The bar
-      // is intentionally low - "ok" clears it - on the view that the escalation exists to reach
-      // a person and a reply is proof it did.
-      //
-      // What it deliberately does NOT do is silence a habit that hasn't started nudging yet.
-      // That was the old behaviour (one per-user `replied` flag), and it meant a "pause" sent at
-      // noon swallowed a 9pm reminder the user had never been asked about and plainly still
-      // wanted. A reply answers the question it was asked, not every question the day might
-      // still hold.
+      const reply = body.content.trim();
+      // An empty webhook body is not an answer.
       if (reply.length > 0) {
-        await Promise.all(pending.map((p) => setNudgeMuted(uid, p.goal.id, p.date)));
-      }
+        // The habits that were actually nudging when the reply came in. Sendblue has no
+        // reply-to/thread field, so the clock is the best available answer, and it's an honest
+        // one: getPendingNudges already gates a habit out until its own nudge time has passed.
+        // A number whose habit hasn't started yet is left alone. A noon reply used to silence a
+        // 9pm reminder the user had never been asked about.
+        //
+        // Both nudge days are considered, exactly as the dispatch tick considers them: just
+        // after midnight the text being answered may belong to a ladder that started yesterday
+        // evening, and the hold has to be written under that day's key or the ladder carries on.
+        const wallNow = getPstMinutesNow();
+        const pending: {
+          date: string;
+          carryover: boolean;
+          goal: { id: string; emoji: string; name: string; nudgeNumber?: number };
+        }[] = [];
+        for (const a of nudgeAnchors(wallNow, getTodayDate())) {
+          const candidates = await getNudgeCandidates(a.date, uid);
+          const inPlay = a.carryover ? candidates.filter((g) => crossesMidnight(g.nudgeTime)) : candidates;
+          for (const goal of getPendingNudges(inPlay, a.dow, a.nowMin)) {
+            pending.push({ date: a.date, carryover: a.carryover, goal });
+          }
+        }
 
-      // Confirm back so the reply doesn't just vanish into silence — the user has no other way
-      // to know it was understood. The message names exactly what it muted and says outright
-      // that later habits are still coming, since "muted for today" on its own reads as a
-      // bigger promise than this now makes.
-      if (reply.length > 0) {
-        const named = pending.map((p) => `${p.goal.emoji} ${p.goal.name}`).join(", ");
-        const body_ =
-          pending.length > 0
-            ? `✅ Got it: ${named}. Muted for the rest of today. Any habit due later today will still nudge you.`
-            : `✅ Got it. Nothing's nudging you right now.`;
+        // Only the instructed shape does anything. "pause" and "ok" used to mute every habit
+        // that was nudging, for the rest of the day; they now get the instructions back and
+        // the ladder keeps going.
+        const groups = parseSnoozeReply(reply);
+        let body_: string;
+        if (!groups) {
+          body_ = pending.length > 0 ? SNOOZE_HINT : `Nothing's nudging you right now. ${SNOOZE_HINT}`;
+        } else {
+          const applied = new Map<string, { label: string; when: string }>();
+          const missed = new Set<number>();
+          const matched = new Set<number>();
+          for (const group of groups) {
+            const wallUntil = soonestUntil(group.clockMins, wallNow);
+            const when = formatSnoozeWhen(wallUntil);
+            for (const n of group.numbers) {
+              const hits = pending.filter((p) => p.goal.nudgeNumber === n);
+              if (hits.length === 0) {
+                missed.add(n);
+                continue;
+              }
+              matched.add(n);
+              for (const hit of hits) {
+                await setNudgeSnoozedUntil(
+                  uid,
+                  hit.goal.id,
+                  hit.date,
+                  snoozeUntilOnAnchor(wallUntil, hit.carryover)
+                );
+                applied.set(`${hit.date}:${hit.goal.id}`, {
+                  label: `${hit.goal.emoji} ${hit.goal.name}`,
+                  when,
+                });
+              }
+            }
+          }
+          const missedNumbers = Array.from(missed).filter((n) => !matched.has(n));
+          const leftOut = pending.some((p) => !applied.has(`${p.date}:${p.goal.id}`));
+          body_ = snoozeConfirmation(Array.from(applied.values()), missedNumbers, leftOut);
+        }
+
         try {
           await sendText(body.number, body_);
         } catch (err) {

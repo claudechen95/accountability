@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 import { fakeRedis } from "./redis-fake";
 import { POST } from "@/app/api/nudge/dispatch/route";
+import { SNOOZE_HINT } from "@/lib/snooze";
 import type { Goal } from "@/lib/types";
 
 // End-to-end over the dispatch route, one simulated PST day at a time. The pure schedule maths
@@ -239,11 +240,12 @@ describe("carrier opt-out keywords", () => {
     }
   });
 
-  // Naming a safe word matters more than it looks: "reply anything" is an invitation to
+  // Naming the reply shape matters more than it looks: "reply anything" is an invitation to
   // improvise, and "stop" or "cancel" are the obvious things to improvise.
-  it("names a harmless word rather than inviting a free-form reply", async () => {
+  it("tells the user how to snooze instead of offering pause", async () => {
     await runDay();
-    expect(texts[0].body).toContain(`Reply "pause" to mute these for today.`);
+    expect(texts[0].body).toContain(SNOOZE_HINT);
+    expect(texts[0].body).not.toContain("pause");
   });
 
   // "these", not "today's nudges": the reply only mutes the habits the text just listed, and
@@ -319,6 +321,74 @@ describe("muting a habit for the day", () => {
     expect(texts[0].body).toContain("Video Journal");
     expect(texts[0].body).not.toContain("Nature");
     expect(calls[0].script).toContain("1 habit open today: Video Journal.");
+  });
+});
+
+describe("snoozing until a time", () => {
+  // A hold is not a mute. Slots that pass while it's in effect are skipped, and the ladder
+  // picks back up afterwards: the 20:40 text, the calls, and the partner alert all still happen.
+  it("skips the reminders that fall during the hold and resumes after it", async () => {
+    const log: string[] = [];
+    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "18:10") fakeRedis.seed(`tester:nudge:snoozed-until:salad:${TODAY}`, 19 * 60 + 30);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `18:00 text→${PHONE}`,
+      `20:40 text→${PHONE}`,
+      `20:50 call→${PHONE}`,
+      `21:00 call→${PHONE}`,
+      `21:10 call→${PHONE}`,
+      `21:40 text→${PARTNER}`,
+    ]);
+  });
+
+  // Calls wait rather than being spent during the hold, so a snooze that outlasts the first
+  // call time still gets its three attempts, and the partner alert moves with them.
+  it("holds the calls too, then runs them once the time has passed", async () => {
+    const log: string[] = [];
+    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "18:10") fakeRedis.seed(`tester:nudge:snoozed-until:salad:${TODAY}`, 21 * 60);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `18:00 text→${PHONE}`,
+      `21:00 call→${PHONE}`,
+      `21:10 call→${PHONE}`,
+      `21:20 call→${PHONE}`,
+      `21:50 text→${PARTNER}`,
+    ]);
+  });
+
+  it("leaves a habit that wasn't named on its own ladder", async () => {
+    fakeRedis.seed("tester:goals", [
+      { ...salad, nudgeTime: "18:00", nudgeNumber: 1 },
+      { ...salad, id: "gym", name: "Gym", nudgeTime: "18:00", nudgeNumber: 2 },
+    ]);
+    const bodies = new Map<string, string[]>();
+    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "18:10") fakeRedis.seed(`tester:nudge:snoozed-until:salad:${TODAY}`, 19 * 60 + 30);
+      const seen = texts.length;
+      await tickAt(at);
+      bodies.set(at, texts.slice(seen).map((t) => t.body));
+    }
+    // 19:20 is inside Salad's hold, so only Gym is reminded. 20:40 is after it, so both are,
+    // in the one text a shared tick sends.
+    expect(bodies.get("19:20")).toEqual([
+      `⏰ Still pending:\n2. 🥗 Gym\n${SNOOZE_HINT}`,
+    ]);
+    expect(bodies.get("20:40")).toEqual([
+      `⏰ Still pending:\n1. 🥗 Salad\n2. 🥗 Gym\n${SNOOZE_HINT}`,
+    ]);
   });
 });
 

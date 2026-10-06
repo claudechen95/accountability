@@ -176,6 +176,31 @@ export async function setNudgeMuted(userId: string | undefined, goalId: string, 
   await kv.set(k(userId, `nudge:muted:${goalId}:${date}`), 1, { ex: nudgeClaimTtl() });
 }
 
+// "Hold this habit until this minute, then carry on." Set by a text reply of the shape
+// `1 2 until 15:30` (see lib/snooze.ts). It is not a mute: texts and calls wait until the
+// minute and then the ladder resumes, partner alert included.
+//
+// `untilMin` is minutes from midnight of the nudge day named by `date`, the same frame as
+// every other deadline in the ladder, so a hold that ends after midnight stores 1500 rather
+// than 60. A later reply for the same habit overwrites it.
+export async function getNudgeSnoozedUntil(
+  userId: string | undefined,
+  goalId: string,
+  date: string
+): Promise<number | null> {
+  const v = await kv.get<number>(k(userId, `nudge:snoozed-until:${goalId}:${date}`));
+  return typeof v === "number" ? v : null;
+}
+
+export async function setNudgeSnoozedUntil(
+  userId: string | undefined,
+  goalId: string,
+  date: string,
+  untilMin: number
+): Promise<void> {
+  await kv.set(k(userId, `nudge:snoozed-until:${goalId}:${date}`), untilMin, { ex: nudgeClaimTtl() });
+}
+
 // Atomically claims one of a habit's three text slots for the day (slot times come from
 // nudgeSlots in lib/nudges.ts). Returns true if this call claimed it, false if an earlier tick
 // already sent that reminder. Claiming BEFORE sending — rather than checking a "last sent"

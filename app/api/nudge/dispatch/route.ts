@@ -5,6 +5,7 @@ import {
   getNudgeCandidates,
   isNudgeMuted,
   setNudgeMuted,
+  getNudgeSnoozedUntil,
   claimNudgeSlot,
   claimEscalation,
   getEscalationTime,
@@ -30,6 +31,7 @@ import {
   PARTNER_ALERT_DELAY_MIN,
   type NudgeAnchor,
 } from "@/lib/nudges";
+import { SNOOZE_HINT } from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
 import { isCallConfigured, placeCall, getCallOutcome } from "@/lib/call";
 
@@ -57,12 +59,31 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   const pending = due.filter((_, i) => !mutedFlags[i]);
   if (pending.length === 0) return steps;
 
+  // A snooze holds a habit until the minute the reply named, then the ladder carries on. While
+  // the hold is in effect the habit is out of this tick's texts and calls, and it keeps the
+  // partner alert waiting (attemptsRemain, below). Text slots that pass during the hold are
+  // claimed anyway: dueSlotIndices would otherwise replay every one of them on the tick the
+  // hold ends, which is a burst of reminders the user asked not to get.
+  const snoozeUntils = await Promise.all(pending.map((g) => getNudgeSnoozedUntil(uid, g.id, date)));
+  const active: typeof pending = [];
+  let held = false;
+  for (let i = 0; i < pending.length; i++) {
+    const until = snoozeUntils[i];
+    if (until != null && nowMin < until) {
+      held = true;
+      const indices = dueSlotIndices(nudgeSlots(pending[i].nudgeTime), nowMin);
+      await Promise.all(indices.map((slot) => claimNudgeSlot(uid, pending[i].id, date, slot)));
+    } else {
+      active.push(pending[i]);
+    }
+  }
+
   // Steps 1–3. A habit joins this tick's text only if it actually claimed a slot, so a reminder
   // goes out once per slot rather than once per tick. Texts and calls are both scheduled per
   // habit and don't exclude each other: a habit that starts nudging late can be sending its
   // first text on the same tick another habit is being called about.
-  const dueTexts: typeof pending = [];
-  for (const g of pending) {
+  const dueTexts: typeof active = [];
+  for (const g of active) {
     const indices = dueSlotIndices(nudgeSlots(g.nudgeTime), nowMin);
     const claims = await Promise.all(indices.map((i) => claimNudgeSlot(uid, g.id, date, i)));
     if (claims.some(Boolean)) dueTexts.push(g);
@@ -70,14 +91,12 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
 
   if (dueTexts.length > 0) {
     const list = dueTexts.map((g) => `${g.nudgeNumber}. ${g.emoji} ${g.name}`).join("\n");
-    // Suggests a safe word rather than saying "reply anything", even though any reply does mute
-    // the habits it was about. Sendblue auto-detects stop/unsubscribe/cancel/opt out/revoke/
-    // end/quit and the carrier intercepts them ahead of Sendblue on SMS: any of those
-    // permanently blocks every future message to this number, transactional included, and never
-    // delivers the inbound webhook - so the ladder would keep calling and alerting the partner
-    // about texts that can no longer arrive. Inviting a free-form reply invites someone to
-    // improvise exactly one of those words, so we name a harmless one instead.
-    await sendText(user.phone!, `⏰ Still pending:\n${list}\nReply "pause" to mute these for today.`);
+    // Names the reply shape rather than inviting a free-form answer. Sendblue auto-detects
+    // stop/unsubscribe/cancel/opt out/revoke/end/quit and the carrier intercepts them ahead of
+    // Sendblue on SMS: any of those permanently blocks every future message to this number,
+    // transactional included, and never delivers the inbound webhook - so the ladder would keep
+    // calling and alerting the partner about texts that can no longer arrive.
+    await sendText(user.phone!, `⏰ Still pending:\n${list}\n${SNOOZE_HINT}`);
     steps.push("text");
   }
 
@@ -87,7 +106,8 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   const callable = isCallConfigured();
   const dueCalls: { goal: (typeof pending)[number]; attempt: number }[] = [];
   const reachedIds: string[] = [];
-  let attemptsRemain = false;
+  // A held habit still has its ladder ahead of it, so the partner alert waits with it.
+  let attemptsRemain = held;
   let lastAttemptAt: number | null = null;
 
   // Habits due on the same tick share one placed call and therefore one sid, so asking Twilio
@@ -98,7 +118,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
     return outcomes.get(sid)!;
   };
 
-  for (const g of pending) {
+  for (const g of active) {
     const start = habitCallStart(g.nudgeTime);
     if (nowMin < start) {
       attemptsRemain = true; // its texts are still running
@@ -169,7 +189,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
     if (user.partnerPhone && (await claimPartnerAlert(uid, date))) {
       // Muted habits are already out of `pending`, so the alert names only what the user never
       // answered about - answering is a full exit, not a mute on your own phone.
-      const names = pending.map((g) => `${g.emoji} ${g.name}`).join(", ");
+      const names = active.map((g) => `${g.emoji} ${g.name}`).join(", ");
       await sendText(user.partnerPhone, `📢 ${user.label} didn't finish today: ${names}`);
       steps.push("partner");
     }
