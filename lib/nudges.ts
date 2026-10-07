@@ -158,21 +158,48 @@ export function habitCallStart(nudgeTime?: string): number {
 }
 
 /**
+ * How long a ladder takes from its first call to its partner alert. Independent of the habit's
+ * clock, so it's also how much room any *delayed* ladder still needs ahead of it (see
+ * maxSnoozeUntil).
+ */
+export const LADDER_TAIL_MIN = (MAX_CALL_ATTEMPTS - 1) * CALL_RETRY_MIN + PARTNER_ALERT_DELAY_MIN;
+
+/**
  * The latest minute this habit's ladder can reach if nothing is delayed - the last call attempt
  * plus the partner-alert wait. Used only to decide whether a ladder overhangs midnight and so
  * needs yesterday's pass; the real end can be later, which CARRYOVER_WINDOW_MIN allows for.
  */
 export function ladderEnd(nudgeTime?: string): number {
-  return (
-    habitCallStart(nudgeTime) +
-    (MAX_CALL_ATTEMPTS - 1) * CALL_RETRY_MIN +
-    PARTNER_ALERT_DELAY_MIN
-  );
+  return habitCallStart(nudgeTime) + LADDER_TAIL_MIN;
 }
 
 /** True when this habit's ladder runs past midnight into the next calendar date. */
 export function crossesMidnight(nudgeTime?: string): boolean {
   return ladderEnd(nudgeTime) >= MINUTES_PER_DAY;
+}
+
+/**
+ * The latest minute a snooze may hold this habit and still have the rest of its ladder happen.
+ *
+ * A hold is a delay, not an exit - the partner alert waits for it rather than being cancelled by
+ * it. That's only true while a dispatch tick can still *see* the habit's nudge day, and the
+ * window is not open-ended: a ladder that doesn't overhang midnight is dropped from the carryover
+ * pass by crossesMidnight, and one that does is dropped once CARRYOVER_WINDOW_MIN is up. A hold
+ * set beyond that is never cleared by anything, so the calls and the alert it was keeping waiting
+ * simply never happen - a silent mute, which is exactly what replacing "pause" with a snooze was
+ * meant to remove.
+ *
+ * So back off the horizon by what the delayed ladder still needs: its tail, plus one retry
+ * interval of slack because calls only go out on cron ticks and the first one lands on the tick
+ * at or after the hold expires, not on the minute itself.
+ *
+ * This is always later than the habit's own nudge time (every habit's natural ladder fits inside
+ * its horizon, by construction - a 23:59 habit still finishes by 01:39), so clamping can never
+ * leave a habit with no snooze available at all.
+ */
+export function maxSnoozeUntil(nudgeTime?: string): number {
+  const horizon = MINUTES_PER_DAY + (crossesMidnight(nudgeTime) ? CARRYOVER_WINDOW_MIN : 0);
+  return horizon - LADDER_TAIL_MIN - CALL_RETRY_MIN;
 }
 
 /**

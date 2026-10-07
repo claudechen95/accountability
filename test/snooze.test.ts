@@ -4,7 +4,7 @@ import {
   formatSnoozeWhen,
   parseSnoozeReply,
   snoozeConfirmation,
-  snoozeUntilOnAnchor,
+  snoozeHold,
   soonestUntil,
 } from "@/lib/snooze";
 
@@ -83,31 +83,109 @@ describe("formatting", () => {
     expect(formatSnoozeWhen(MINUTES_TOMORROW + 15 * 60 + 30)).toBe("15:30 tomorrow");
   });
 
-  it("shifts a wall-clock time onto yesterday's minute count for a carryover anchor", () => {
-    expect(snoozeUntilOnAnchor(60, true)).toBe(MINUTES_TOMORROW + 60);
-    expect(snoozeUntilOnAnchor(20 * 60 + 30, false)).toBe(20 * 60 + 30);
-  });
-
   it("names each time, the habits on it, and what was left out", () => {
     expect(
-      snoozeConfirmation(
-        [
+      snoozeConfirmation({
+        applied: [
           { label: "🥗 Salad", when: "20:30" },
           { label: "🏋️ Gym", when: "20:30" },
         ],
-        [],
-        false
-      )
+        missedNumbers: [],
+        leftOut: false,
+      })
     ).toBe("✅ Snoozed until 20:30: 🥗 Salad, 🏋️ Gym.");
 
     expect(
-      snoozeConfirmation([{ label: "🥗 Salad", when: "20:30" }], [9], true)
+      snoozeConfirmation({
+        applied: [{ label: "🥗 Salad", when: "20:30" }],
+        missedNumbers: [9],
+        leftOut: true,
+      })
     ).toBe(
       "✅ Snoozed until 20:30: 🥗 Salad. No habit numbered 9 is nudging right now. Anything you left out will keep nudging."
     );
   });
 
+  // The reply named 01:00 and the confirmation names 23:00, so the difference has to be
+  // accounted for - unexplained, it reads as the app having misheard the time.
+  it("accounts for a time it had to pull back", () => {
+    expect(
+      snoozeConfirmation({
+        applied: [{ label: "🥗 Salad", when: "23:00", capped: true }],
+        missedNumbers: [],
+        leftOut: false,
+      })
+    ).toBe("✅ Snoozed until 23:00: 🥗 Salad. That's as late as tonight's nudges run.");
+  });
+
+  it("says which habits there was no room left to hold", () => {
+    expect(
+      snoozeConfirmation({
+        applied: [],
+        tooLate: ["🥗 Salad"],
+        missedNumbers: [],
+        leftOut: false,
+      })
+    ).toBe("Too late to snooze 🥗 Salad tonight.");
+  });
+
   it("keeps the hint free of a command when nothing was snoozed", () => {
-    expect(snoozeConfirmation([], [], false)).toBe(SNOOZE_HINT);
+    expect(snoozeConfirmation({ applied: [], missedNumbers: [], leftOut: false })).toBe(SNOOZE_HINT);
+  });
+});
+
+// A hold is a delay, so it may not outlive the window in which a dispatch tick still looks at the
+// habit's nudge day - past that there is nothing left to resume the ladder, and the snooze would
+// be a silent mute that also cancels the partner alert.
+describe("snoozeHold", () => {
+  const EVENING = "18:00"; // ladder ends at 21:40, so the cap is 23:00
+  const LATE = "23:30"; // overhangs midnight, so the cap runs to 02:00
+
+  it("keeps a time the ladder can still reach", () => {
+    expect(snoozeHold(20 * 60 + 30, AT_7PM, false, EVENING)).toEqual({
+      until: 20 * 60 + 30,
+      wall: 20 * 60 + 30,
+      capped: false,
+    });
+  });
+
+  it("pulls back a time past the end of the nudge day", () => {
+    // "until 1am" from 19:00 is minute 1500, which no tick on this habit's day ever reaches.
+    expect(snoozeHold(MINUTES_TOMORROW + 60, AT_7PM, false, EVENING)).toEqual({
+      until: 23 * 60,
+      wall: 23 * 60,
+      capped: true,
+    });
+  });
+
+  it("lets a habit whose ladder overhangs midnight hold that late", () => {
+    // 01:00, asked for at 23:40 - inside the carryover window, so it stands as asked.
+    expect(snoozeHold(MINUTES_TOMORROW + 60, 23 * 60 + 40, false, LATE)).toEqual({
+      until: MINUTES_TOMORROW + 60,
+      wall: MINUTES_TOMORROW + 60,
+      capped: false,
+    });
+  });
+
+  it("measures a carryover anchor's hold from yesterday's midnight", () => {
+    // A reply at 00:20 answering the ladder that started at 23:30 yesterday: 01:00 today is
+    // minute 1500 of that nudge day, and the wall time to show the user is still 01:00.
+    expect(snoozeHold(60, 20, true, LATE)).toEqual({
+      until: MINUTES_TOMORROW + 60,
+      wall: 60,
+      capped: false,
+    });
+    // 06:00 is past even an overhanging ladder's reach, so it comes back to 02:00 today.
+    expect(snoozeHold(6 * 60, 20, true, LATE)).toEqual({
+      until: MINUTES_TOMORROW + 2 * 60,
+      wall: 2 * 60,
+      capped: true,
+    });
+  });
+
+  it("holds nothing when the cap has already passed", () => {
+    // 23:10, after an 18:00 habit's ladder has run its course: there is no hold to write, and
+    // claiming one would be a confirmation saying 23:00 at ten past.
+    expect(snoozeHold(MINUTES_TOMORROW + 60, 23 * 60 + 10, false, EVENING)).toBeNull();
   });
 });

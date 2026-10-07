@@ -8,6 +8,9 @@ import {
   nextCallTime,
   ladderEnd,
   crossesMidnight,
+  maxSnoozeUntil,
+  LADDER_TAIL_MIN,
+  CALL_RETRY_MIN,
   nudgeAnchors,
   toMinutes,
   formatHHMM,
@@ -265,6 +268,44 @@ describe("crossesMidnight", () => {
   it("stays inside the carryover window even at the latest configurable time", () => {
     // The bound the claim TTL and the lookback are both sized against: nothing may finish later.
     expect(ladderEnd("23:59")).toBeLessThan(MINUTES_PER_DAY + CARRYOVER_WINDOW_MIN);
+  });
+});
+
+// How late a snooze may hold a habit. The ceiling exists because a hold the dispatch tick can
+// never clear isn't a delay at all - it cancels the calls and the partner alert and leaves no
+// record of having done so.
+describe("maxSnoozeUntil", () => {
+  it("stops before midnight for a ladder that doesn't overhang it", () => {
+    // After 00:00 the carryover pass drops an 18:00 habit, so 23:00 is the latest hold that
+    // still leaves its three calls and the partner alert inside the day.
+    expect(formatHHMM(maxSnoozeUntil("18:00"))).toBe("23:00");
+    expect(maxSnoozeUntil("21:00")).toBe(maxSnoozeUntil("18:00"));
+  });
+
+  it("runs into the small hours for a ladder that does", () => {
+    // A 22:30 habit is already being called about after midnight, so its hold may be too - up to
+    // the point where the carryover pass itself stops looking.
+    expect(maxSnoozeUntil("22:30")).toBe(MINUTES_PER_DAY + at("02:00"));
+    expect(maxSnoozeUntil("23:30")).toBe(MINUTES_PER_DAY + at("02:00"));
+  });
+
+  it("leaves the whole ladder room to finish inside the window it can be ticked in", () => {
+    for (let t = 0; t < MINUTES_PER_DAY; t++) {
+      const time = formatHHMM(t);
+      const horizon = MINUTES_PER_DAY + (crossesMidnight(time) ? CARRYOVER_WINDOW_MIN : 0);
+      // Tail plus a tick of slack, since the first call lands on the tick at or after the hold
+      // expires rather than on the minute itself.
+      expect(maxSnoozeUntil(time) + LADDER_TAIL_MIN + CALL_RETRY_MIN, time).toBeLessThanOrEqual(horizon);
+    }
+  });
+
+  it("is always later than the habit's own nudge time, so every habit can be snoozed", () => {
+    // Otherwise clamping would silently refuse to hold some habits at all - and the boundary is
+    // tight: a 22:19 habit doesn't overhang midnight and so has only 41 minutes of room.
+    for (let t = 0; t < MINUTES_PER_DAY; t++) {
+      const time = formatHHMM(t);
+      expect(maxSnoozeUntil(time), time).toBeGreaterThan(t);
+    }
   });
 });
 

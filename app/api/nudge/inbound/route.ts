@@ -14,7 +14,7 @@ import {
   parseSnoozeReply,
   soonestUntil,
   formatSnoozeWhen,
-  snoozeUntilOnAnchor,
+  snoozeHold,
   snoozeConfirmation,
 } from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
@@ -62,7 +62,7 @@ async function POSTHandler(req: Request) {
         const pending: {
           date: string;
           carryover: boolean;
-          goal: { id: string; emoji: string; name: string; nudgeNumber?: number };
+          goal: { id: string; emoji: string; name: string; nudgeNumber?: number; nudgeTime?: string };
         }[] = [];
         for (const a of nudgeAnchors(wallNow, getTodayDate())) {
           const candidates = await getNudgeCandidates(a.date, uid);
@@ -80,36 +80,48 @@ async function POSTHandler(req: Request) {
         if (!groups) {
           body_ = pending.length > 0 ? SNOOZE_HINT : `Nothing's nudging you right now. ${SNOOZE_HINT}`;
         } else {
-          const applied = new Map<string, { label: string; when: string }>();
+          const applied = new Map<string, { label: string; when: string; capped: boolean }>();
+          const tooLate = new Map<string, string>();
           const missed = new Set<number>();
           const matched = new Set<number>();
           for (const group of groups) {
             const wallUntil = soonestUntil(group.clockMins, wallNow);
-            const when = formatSnoozeWhen(wallUntil);
             for (const n of group.numbers) {
               const hits = pending.filter((p) => p.goal.nudgeNumber === n);
               if (hits.length === 0) {
                 missed.add(n);
                 continue;
               }
+              // The habit is nudging and was named, so the reply was about it - whether or not
+              // there turns out to be room left to hold it.
               matched.add(n);
               for (const hit of hits) {
-                await setNudgeSnoozedUntil(
-                  uid,
-                  hit.goal.id,
-                  hit.date,
-                  snoozeUntilOnAnchor(wallUntil, hit.carryover)
-                );
-                applied.set(`${hit.date}:${hit.goal.id}`, {
-                  label: `${hit.goal.emoji} ${hit.goal.name}`,
-                  when,
+                const key = `${hit.date}:${hit.goal.id}`;
+                const label = `${hit.goal.emoji} ${hit.goal.name}`;
+                // Clamped per habit, since how late a hold can run depends on how late that
+                // habit's own ladder reaches.
+                const hold = snoozeHold(wallUntil, wallNow, hit.carryover, hit.goal.nudgeTime);
+                if (!hold) {
+                  tooLate.set(key, label);
+                  continue;
+                }
+                await setNudgeSnoozedUntil(uid, hit.goal.id, hit.date, hold.until);
+                applied.set(key, {
+                  label,
+                  when: formatSnoozeWhen(hold.wall),
+                  capped: hold.capped,
                 });
               }
             }
           }
           const missedNumbers = Array.from(missed).filter((n) => !matched.has(n));
           const leftOut = pending.some((p) => !applied.has(`${p.date}:${p.goal.id}`));
-          body_ = snoozeConfirmation(Array.from(applied.values()), missedNumbers, leftOut);
+          body_ = snoozeConfirmation({
+            applied: Array.from(applied.values()),
+            tooLate: Array.from(tooLate.values()),
+            missedNumbers,
+            leftOut,
+          });
         }
 
         try {

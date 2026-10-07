@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 import { fakeRedis } from "./redis-fake";
 import { POST } from "@/app/api/nudge/dispatch/route";
+import { POST as INBOUND } from "@/app/api/nudge/inbound/route";
 import { SNOOZE_HINT } from "@/lib/snooze";
 import type { Goal } from "@/lib/types";
 
@@ -39,6 +40,7 @@ vi.mock("@/lib/call", () => ({
 
 const TODAY = "2026-08-26"; // Wednesday, PDT (UTC-7)
 const SECRET = "test-dispatch-secret";
+const WEBHOOK_SECRET = "test-webhook-secret";
 const PHONE = "+15550000001";
 const PARTNER = "+15550000002";
 
@@ -89,6 +91,21 @@ async function runDay(untilHHMM = "26:00"): Promise<string[]> {
   return log;
 }
 
+/**
+ * A real text reply, through the real inbound webhook, at whatever time the last tick set. The
+ * clamp on a snooze is written by the webhook and read by the dispatch route, so it only exists
+ * in the two of them together - seeding the hold key directly would skip the half under test.
+ */
+async function replyFromUser(content: string) {
+  return INBOUND(
+    new Request("http://localhost/api/nudge/inbound", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "sb-webhook-secret": WEBHOOK_SECRET },
+      body: JSON.stringify({ is_outbound: false, number: PHONE, content }),
+    })
+  );
+}
+
 function seedUser(overrides: Partial<{ phone: string; partnerPhone: string }> = {}) {
   fakeRedis.seed("users", [
     { id: "tester", label: "Tester", phone: PHONE, partnerPhone: PARTNER, ...overrides },
@@ -107,6 +124,7 @@ const salad: Goal = {
 beforeAll(() => {
   vi.useFakeTimers();
   process.env.NUDGE_DISPATCH_SECRET = SECRET;
+  process.env.SENDBLUE_WEBHOOK_SECRET = WEBHOOK_SECRET;
 });
 
 afterAll(() => {
@@ -388,6 +406,58 @@ describe("snoozing until a time", () => {
     ]);
     expect(bodies.get("20:40")).toEqual([
       `⏰ Still pending:\n1. 🥗 Salad\n2. 🥗 Gym\n${SNOOZE_HINT}`,
+    ]);
+  });
+
+  // A hold that nothing can ever clear is a mute, and a silent one. Salad's ladder doesn't
+  // overhang midnight, so after 00:00 no tick looks at its nudge day again (the carryover pass
+  // filters it out) - a hold until 1am would therefore keep the calls and the partner alert
+  // waiting for a minute that never arrives on any anchor. "1 until 1am" was an undocumented
+  // mute with no record of itself anywhere.
+  //
+  // So the reply is clamped to the latest minute that still leaves the rest of the ladder room
+  // to run, and the rest of the ladder runs.
+  it("pulls a hold back when it would outlast the ladder, and still alerts the partner", async () => {
+    const log: string[] = [];
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
+      const at = fmt(m);
+      // Answering the 18:00 text with a time well past the end of the ladder.
+      if (at === "18:10") await replyFromUser("1 until 1am");
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `18:00 text→${PHONE}`,
+      // Held to 23:00 rather than 01:00: the remaining texts are skipped, then the call ladder
+      // and the partner alert happen inside the nudge day they belong to.
+      `23:00 call→${PHONE}`,
+      `23:10 call→${PHONE}`,
+      `23:20 call→${PHONE}`,
+      `23:50 text→${PARTNER}`,
+    ]);
+  });
+
+  // Same reply, a habit whose ladder does overhang midnight: 01:00 is inside the window the
+  // carryover pass still ticks, so this one is honoured as asked rather than pulled back.
+  it("honours a past-midnight hold for a habit whose ladder runs that late anyway", async () => {
+    fakeRedis.seed("tester:goals", [{ ...salad, id: "journal", name: "Video Journal", nudgeTime: "23:30" }]);
+    const log: string[] = [];
+    for (let m = toMin("23:00"); m <= toMin("26:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "23:40") await replyFromUser("1 until 1am");
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `23:30 text→${PHONE}`,
+      `25:00 call→${PHONE}`, // 01:00, the minute the hold named
+      `25:10 call→${PHONE}`,
+      `25:20 call→${PHONE}`,
+      `25:50 text→${PARTNER}`,
     ]);
   });
 });

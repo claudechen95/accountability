@@ -1,4 +1,4 @@
-import { formatHHMM, MINUTES_PER_DAY } from "./nudges";
+import { formatHHMM, maxSnoozeUntil, MINUTES_PER_DAY } from "./nudges";
 
 /**
  * How a nudge text tells the user to push a reminder back. The shape is the whole command:
@@ -113,20 +113,62 @@ export function formatSnoozeWhen(untilMin: number): string {
   return untilMin >= MINUTES_PER_DAY ? `${clock} tomorrow` : clock;
 }
 
-/**
- * The same instant, measured from the nudge day's midnight. A carryover anchor is yesterday, so
- * a wall-clock time of 01:00 today is minute 1500 on that anchor, which is what the dispatch
- * tick compares against its own `nowMin`.
- */
-export function snoozeUntilOnAnchor(wallUntilMin: number, carryover: boolean): number {
-  return wallUntilMin + (carryover ? MINUTES_PER_DAY : 0);
+export interface SnoozeHold {
+  /** Minutes from the nudge day's midnight - the frame the dispatch tick compares against. */
+  until: number;
+  /** The same instant from today's midnight, for formatSnoozeWhen. */
+  wall: number;
+  /** The requested time was later than the ladder can reach, so it was pulled back to `until`. */
+  capped: boolean;
 }
 
-export function snoozeConfirmation(
-  applied: { label: string; when: string }[],
-  missedNumbers: number[],
-  leftOut: boolean
-): string {
+/**
+ * The hold to write for one habit, or null when there's no room left to hold it at all.
+ *
+ * Two conversions happen here, and both are about frames of reference. A carryover anchor is
+ * yesterday, so a wall-clock 01:00 today is minute 1500 on it - that's the frame every deadline
+ * in the ladder is in. And the hold is clamped to maxSnoozeUntil, because a snooze is a delay and
+ * a hold set past the end of the nudge day would be a silent exit instead: nothing would ever
+ * clear it, so the calls and the partner alert it holds back would never happen. A request past
+ * the cap is pulled back to it rather than refused - the user asked for as late as possible, and
+ * that's what they get.
+ *
+ * Null means the cap is already behind us, which a late enough reply to a finished ladder can do.
+ * Writing the hold anyway would be a no-op the confirmation would then lie about.
+ */
+export function snoozeHold(
+  wallUntilMin: number,
+  wallNowMin: number,
+  carryover: boolean,
+  nudgeTime?: string
+): SnoozeHold | null {
+  const offset = carryover ? MINUTES_PER_DAY : 0;
+  const requested = wallUntilMin + offset;
+  const until = Math.min(requested, maxSnoozeUntil(nudgeTime));
+  const wall = until - offset;
+  if (wall <= wallNowMin) return null;
+  return { until, wall, capped: until < requested };
+}
+
+/**
+ * What goes back to the user. `applied` is what was held and until when, `tooLate` the habits
+ * there was no room left to hold, `missedNumbers` the numbers that match nothing nudging, and
+ * `leftOut` whether anything pending went unnamed.
+ *
+ * A clamped time is called out rather than quietly substituted: the reply named one time and the
+ * confirmation names another, so the difference has to be accounted for or it reads as a bug.
+ */
+export function snoozeConfirmation({
+  applied,
+  tooLate = [],
+  missedNumbers,
+  leftOut,
+}: {
+  applied: { label: string; when: string; capped?: boolean }[];
+  tooLate?: string[];
+  missedNumbers: number[];
+  leftOut: boolean;
+}): string {
   const parts: string[] = [];
   const labelsByWhen = new Map<string, string[]>();
   for (const { label, when } of applied) {
@@ -137,6 +179,12 @@ export function snoozeConfirmation(
   labelsByWhen.forEach((labels, when) => {
     parts.push(`Snoozed until ${when}: ${labels.join(", ")}.`);
   });
+  if (applied.some((a) => a.capped)) {
+    parts.push("That's as late as tonight's nudges run.");
+  }
+  if (tooLate.length > 0) {
+    parts.push(`Too late to snooze ${tooLate.join(", ")} tonight.`);
+  }
   if (missedNumbers.length === 1) {
     parts.push(`No habit numbered ${missedNumbers[0]} is nudging right now.`);
   } else if (missedNumbers.length > 1) {

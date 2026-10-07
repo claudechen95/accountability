@@ -160,6 +160,31 @@ describe("snoozing the habits a reply names", () => {
     }
   });
 
+  // A hold has to stay inside the window the dispatch tick still looks at the nudge day in, or
+  // it cancels the calls and the partner alert instead of delaying them. The reply is honoured as
+  // far as it can be, and the confirmation names the time that was actually written - the gap
+  // between what was asked and what was stored is the whole reason it says why.
+  it("pulls a hold back to the latest minute the ladder can still finish in", async () => {
+    await reply("1 until 1am");
+    expect(await getNudgeSnoozedUntil("tester", "salad", TODAY)).toBe(23 * 60);
+    expect(texts[0].body).toBe(
+      "✅ Snoozed until 23:00: 🥗 Salad. That's as late as tonight's nudges run. Anything you left out will keep nudging."
+    );
+  });
+
+  it("writes no hold at all once there's no room left for one", async () => {
+    vi.setSystemTime(new Date(Date.UTC(2026, 7, 27, 6, 10))); // 23:10 PDT, past Salad's cap
+    try {
+      await reply("1 until 1am");
+      expect(await getNudgeSnoozedUntil("tester", "salad", TODAY)).toBeNull();
+      expect(texts[0].body).toBe(
+        "Too late to snooze 🥗 Salad tonight. Anything you left out will keep nudging."
+      );
+    } finally {
+      vi.setSystemTime(new Date(Date.UTC(2026, 7, 27, 2, 0))); // back to 19:00 PDT Aug 26
+    }
+  });
+
   it("sends the instructions when the reply arrives with nothing nudging", async () => {
     fakeRedis.seed("tester:goals", [goals[2]]); // only the 21:00 habit, and it's 19:00
     await reply("on it");
