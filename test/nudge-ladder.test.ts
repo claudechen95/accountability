@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vites
 import { fakeRedis } from "./redis-fake";
 import { POST } from "@/app/api/nudge/dispatch/route";
 import { POST as INBOUND } from "@/app/api/nudge/inbound/route";
-import { SNOOZE_HINT } from "@/lib/snooze";
+import { REPLY_HINT } from "@/lib/snooze";
 import type { Goal } from "@/lib/types";
 
 // End-to-end over the dispatch route, one simulated PST day at a time. The pure schedule maths
@@ -258,12 +258,14 @@ describe("carrier opt-out keywords", () => {
     }
   });
 
-  // Naming the reply shape matters more than it looks: "reply anything" is an invitation to
-  // improvise, and "stop" or "cancel" are the obvious things to improvise.
-  it("tells the user how to snooze instead of offering pause", async () => {
+  // Naming the reply shapes matters more than it looks: "reply anything" is an invitation to
+  // improvise, and "stop" or "cancel" are the obvious things to improvise. Offering "pause" is
+  // part of the same defence rather than a hole in it - a user who means to skip today needs a
+  // word for that, and the test above is what guarantees the word we give them is a safe one.
+  it("names both reply shapes rather than inviting a free-form answer", async () => {
     await runDay();
-    expect(texts[0].body).toContain(SNOOZE_HINT);
-    expect(texts[0].body).not.toContain("pause");
+    expect(texts[0].body).toContain(REPLY_HINT);
+    expect(texts[0].body).toContain("pause");
   });
 
   // "these", not "today's nudges": the reply only mutes the habits the text just listed, and
@@ -327,6 +329,52 @@ describe("muting a habit for the day", () => {
     ]);
     // And the habit the user actually answered about is the only one left out of the alert.
     expect(texts.at(-1)!.body).toBe("📢 Tester didn't finish today: 🥗 Video Journal");
+  });
+
+  // The mute a user can actually reach, end to end: the webhook writes it and the tick reads it,
+  // so "pause" only exists in the two of them together. Seeding the key tests the second half.
+  it("ends that habit's day when the mute arrives as a texted pause", async () => {
+    const log: string[] = [];
+    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+      const at = fmt(m);
+      // Answering the 18:00 text with a deliberate skip rather than a time.
+      if (at === "18:10") await replyFromUser("pause 1");
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    // Everything after the reply is gone, the partner alert included - a pause is an exit, not
+    // a delay, which is the one way it differs from the snooze above.
+    expect(log).toEqual([`18:00 text→${PHONE}`]);
+  });
+
+  it("leaves the habits a texted pause didn't name on their own ladder", async () => {
+    fakeRedis.seed("tester:goals", [
+      { ...salad, nudgeTime: "18:00", nudgeNumber: 1 },
+      { ...salad, id: "gym", name: "Gym", nudgeTime: "18:00", nudgeNumber: 2 },
+    ]);
+    const log: string[] = [];
+    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "18:10") await replyFromUser("pause 1");
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `18:00 text→${PHONE}`,
+      `19:20 text→${PHONE}`,
+      `20:40 text→${PHONE}`,
+      `20:50 call→${PHONE}`,
+      `21:00 call→${PHONE}`,
+      `21:10 call→${PHONE}`,
+      `21:40 text→${PARTNER}`,
+    ]);
+    // Gym's ladder ran untouched, and the alert is about Gym alone.
+    expect(texts.at(-1)!.body).toBe("📢 Tester didn't finish today: 🥗 Gym");
+    expect(calls[0].script).toContain("1 habit open today: Gym.");
   });
 
   it("names only the still-live habits when several are running and one is muted", async () => {
@@ -402,10 +450,10 @@ describe("snoozing until a time", () => {
     // 19:20 is inside Salad's hold, so only Gym is reminded. 20:40 is after it, so both are,
     // in the one text a shared tick sends.
     expect(bodies.get("19:20")).toEqual([
-      `⏰ Still pending:\n2. 🥗 Gym\n${SNOOZE_HINT}`,
+      `⏰ Still pending:\n2. 🥗 Gym\n${REPLY_HINT}`,
     ]);
     expect(bodies.get("20:40")).toEqual([
-      `⏰ Still pending:\n1. 🥗 Salad\n2. 🥗 Gym\n${SNOOZE_HINT}`,
+      `⏰ Still pending:\n1. 🥗 Salad\n2. 🥗 Gym\n${REPLY_HINT}`,
     ]);
   });
 

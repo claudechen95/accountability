@@ -2,11 +2,11 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vites
 import { fakeRedis } from "./redis-fake";
 import { POST } from "@/app/api/nudge/inbound/route";
 import { isNudgeMuted, getNudgeSnoozedUntil } from "@/lib/kv";
-import { SNOOZE_HINT } from "@/lib/snooze";
+import { REPLY_HINT } from "@/lib/snooze";
 import type { Goal } from "@/lib/types";
 
-// Sendblue's inbound webhook. A reply snoozes the numbered habits that are nudging, until the
-// clock time it names. Anything else, including the old "pause", leaves the ladder running.
+// Sendblue's inbound webhook. A reply either snoozes the numbered habits that are nudging until
+// the clock time it names, or pauses them for the day. Anything else leaves the ladder running.
 
 const { texts } = vi.hoisted(() => ({ texts: [] as { to: string; body: string }[] }));
 
@@ -73,21 +73,59 @@ describe("authorization", () => {
   });
 });
 
-describe("pause no longer mutes anything", () => {
-  it("leaves every habit running when the reply is pause", async () => {
+// The case a snooze can't express: the user has decided against the habit today, so there is no
+// later time to name. A pause is the same full exit as answering the phone - no more texts, no
+// call, and no partner alert - and it is a delay in no sense, so it writes no hold.
+describe("pausing for the day", () => {
+  it("mutes every habit that is nudging when the reply names no numbers", async () => {
     await reply("pause");
-    expect(await muted("salad")).toBe(false);
-    expect(await muted("gym")).toBe(false);
+    expect(await muted("salad")).toBe(true);
+    expect(await muted("gym")).toBe(true);
+    // Journal nudges at 21:00, two hours out. A bare pause is still only an answer to the
+    // question that was asked, which is the scoping the Sep 2026 bug was about.
     expect(await muted("journal")).toBe(false);
     expect(await getNudgeSnoozedUntil("tester", "salad", TODAY)).toBeNull();
-    expect(texts[0].body).toBe(SNOOZE_HINT);
+    expect(texts[0].body).toBe("⏸️ Paused for today: 🥗 Salad, 🏋️ Gym. They're back tomorrow.");
   });
 
-  it("does the same for a reply that names nothing", async () => {
+  it("mutes only the habit a numbered pause names, and says so", async () => {
+    await reply("pause 1");
+    expect(await muted("salad")).toBe(true);
+    expect(await muted("gym")).toBe(false);
+    expect(texts[0].body).toBe(
+      "⏸️ Paused for today: 🥗 Salad. It's back tomorrow. Anything you left out will keep nudging."
+    );
+  });
+
+  it("mutes nothing when the number belongs to a habit that hasn't nudged yet", async () => {
+    await reply("pause 3");
+    expect(await muted("journal")).toBe(false);
+    expect(await muted("salad")).toBe(false);
+    expect(texts[0].body).toBe(
+      "No habit numbered 3 is nudging right now. Anything you left out will keep nudging."
+    );
+  });
+
+  it("mutes nothing when a pause arrives with nothing nudging", async () => {
+    fakeRedis.seed("tester:goals", [goals[2]]); // only the 21:00 habit, and it's 19:00
+    await reply("pause");
+    expect(await muted("journal")).toBe(false);
+    expect(texts[0].body).toBe(`Nothing's nudging you right now. ${REPLY_HINT}`);
+  });
+
+  it("reads a pause that names a time as the snooze it is", async () => {
+    await reply("pause 1 until 20:30");
+    expect(await muted("salad")).toBe(false);
+    expect(await getNudgeSnoozedUntil("tester", "salad", TODAY)).toBe(20 * 60 + 30);
+  });
+});
+
+describe("a reply that is neither command", () => {
+  it("leaves every habit running and sends the instructions", async () => {
     await reply("ok");
     expect(await muted("salad")).toBe(false);
     expect(await getNudgeSnoozedUntil("tester", "gym", TODAY)).toBeNull();
-    expect(texts[0].body).toBe(SNOOZE_HINT);
+    expect(texts[0].body).toBe(REPLY_HINT);
   });
 
   it("ignores an empty message, which is not an answer to anything", async () => {
@@ -188,6 +226,6 @@ describe("snoozing the habits a reply names", () => {
   it("sends the instructions when the reply arrives with nothing nudging", async () => {
     fakeRedis.seed("tester:goals", [goals[2]]); // only the 21:00 habit, and it's 19:00
     await reply("on it");
-    expect(texts[0].body).toBe(`Nothing's nudging you right now. ${SNOOZE_HINT}`);
+    expect(texts[0].body).toBe(`Nothing's nudging you right now. ${REPLY_HINT}`);
   });
 });

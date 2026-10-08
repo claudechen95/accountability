@@ -1,58 +1,100 @@
 import { describe, it, expect } from "vitest";
 import {
-  SNOOZE_HINT,
+  REPLY_HINT,
   formatSnoozeWhen,
-  parseSnoozeReply,
+  parseNudgeReply,
+  pauseConfirmation,
   snoozeConfirmation,
   snoozeHold,
   soonestUntil,
 } from "@/lib/snooze";
 
-// The reply grammar. A nudge text tells the user to answer with habit numbers and a clock time,
-// and this is the whole of what counts as that answer. Anything else, including the old "pause",
-// is not a snooze.
+// The reply grammar. A nudge text asks for one of two answers - habit numbers with a clock time
+// to delay them, or "pause" to skip them for the day - and this is the whole of what counts as
+// either. Anything else is not an answer.
+//
+// A clock time is what tells them apart, and that's the distinction itself: a time means "later
+// today", no time means "not today".
+
+const snooze = (text: string) => {
+  const parsed = parseNudgeReply(text);
+  return parsed?.kind === "snooze" ? parsed.groups : null;
+};
 
 const AT_7PM = 19 * 60;
 
-describe("parseSnoozeReply", () => {
+describe("parsing a snooze", () => {
   it("reads several habits sharing one time", () => {
-    expect(parseSnoozeReply("1 2 until 15:30")).toEqual([
+    expect(snooze("1 2 until 15:30")).toEqual([
       { numbers: [1, 2], clockMins: [15 * 60 + 30] },
     ]);
   });
 
   it("reads the same shape with the commas, the hash marks and the word snooze stripped", () => {
-    expect(parseSnoozeReply("please snooze #1, #2 until 15:30")).toEqual([
+    expect(snooze("please snooze #1, #2 until 15:30")).toEqual([
       { numbers: [1, 2], clockMins: [15 * 60 + 30] },
     ]);
   });
 
   it("reads two times in one reply", () => {
-    expect(parseSnoozeReply("1 until 3:30pm and 2 until 4pm")).toEqual([
+    expect(snooze("1 until 3:30pm and 2 until 4pm")).toEqual([
       { numbers: [1], clockMins: [15 * 60 + 30] },
       { numbers: [2], clockMins: [16 * 60] },
     ]);
   });
 
   it("treats a 1-12 hour with no am/pm as both readings", () => {
-    expect(parseSnoozeReply("1 until 3:30")).toEqual([
+    expect(snooze("1 until 3:30")).toEqual([
       { numbers: [1], clockMins: [3 * 60 + 30, 15 * 60 + 30] },
     ]);
   });
 
   it("accepts a dotted am/pm written as its own word", () => {
-    expect(parseSnoozeReply("1 until 3:30 p.m.")).toEqual([
+    expect(snooze("1 until 3:30 p.m.")).toEqual([
       { numbers: [1], clockMins: [15 * 60 + 30] },
     ]);
   });
 
-  it("rejects pause, a bare ok, a number with no time, and a time with no numbers", () => {
-    expect(parseSnoozeReply("pause")).toBeNull();
-    expect(parseSnoozeReply("ok")).toBeNull();
-    expect(parseSnoozeReply("1")).toBeNull();
-    expect(parseSnoozeReply("15:30")).toBeNull();
-    expect(parseSnoozeReply("1 until 25:00")).toBeNull();
-    expect(parseSnoozeReply("1 until 3:60")).toBeNull();
+  it("reads a pause as a snooze when it names a time, since a time is what a delay is", () => {
+    expect(snooze("pause 1 until 15:30")).toEqual([
+      { numbers: [1], clockMins: [15 * 60 + 30] },
+    ]);
+  });
+
+  it("rejects a bare ok, a number with no time, and a time with no numbers", () => {
+    expect(snooze("ok")).toBeNull();
+    expect(snooze("1")).toBeNull();
+    expect(snooze("15:30")).toBeNull();
+    expect(snooze("1 until 25:00")).toBeNull();
+    expect(snooze("1 until 3:60")).toBeNull();
+  });
+});
+
+// The command for a day the user has decided against on purpose. A snooze can't say that: it
+// needs a time they mean to do the thing, so the only honest reply used to be no reply at all.
+describe("parsing a pause", () => {
+  it("reads the numbers it names", () => {
+    expect(parseNudgeReply("pause 1 2")).toEqual({ kind: "pause", numbers: [1, 2] });
+    expect(parseNudgeReply("skip 3")).toEqual({ kind: "pause", numbers: [3] });
+  });
+
+  it("reads a bare pause as naming nothing, which the caller reads as everything nudging", () => {
+    expect(parseNudgeReply("pause")).toEqual({ kind: "pause", numbers: [] });
+    expect(parseNudgeReply("Pause it today")).toEqual({ kind: "pause", numbers: [] });
+    expect(parseNudgeReply("pause all")).toEqual({ kind: "pause", numbers: [] });
+  });
+
+  it("strips the same padding a snooze allows, and dedupes", () => {
+    expect(parseNudgeReply("please pause #1, #1 and #2 today")).toEqual({
+      kind: "pause",
+      numbers: [1, 2],
+    });
+  });
+
+  it("rejects a pause padded out with anything it can't read", () => {
+    // Habits are named by number, never by name - "gym" could be any of several.
+    expect(parseNudgeReply("pause gym")).toBeNull();
+    expect(parseNudgeReply("pause 0")).toBeNull();
   });
 });
 
@@ -130,7 +172,31 @@ describe("formatting", () => {
   });
 
   it("keeps the hint free of a command when nothing was snoozed", () => {
-    expect(snoozeConfirmation({ applied: [], missedNumbers: [], leftOut: false })).toBe(SNOOZE_HINT);
+    expect(snoozeConfirmation({ applied: [], missedNumbers: [], leftOut: false })).toBe(REPLY_HINT);
+  });
+
+  // A pause buys silence, so this line is the only place the user would ever learn it took
+  // something they didn't mean. It names every habit, and says how long for.
+  it("names what a pause reached and how long it lasts", () => {
+    expect(
+      pauseConfirmation({ paused: ["🥗 Salad"], missedNumbers: [], leftOut: false })
+    ).toBe("⏸️ Paused for today: 🥗 Salad. It's back tomorrow.");
+
+    expect(
+      pauseConfirmation({ paused: ["🥗 Salad", "🏋️ Gym"], missedNumbers: [], leftOut: false })
+    ).toBe("⏸️ Paused for today: 🥗 Salad, 🏋️ Gym. They're back tomorrow.");
+  });
+
+  it("answers a pause's unmatched numbers and what it left running in the same voice as a snooze", () => {
+    expect(
+      pauseConfirmation({ paused: ["🥗 Salad"], missedNumbers: [9], leftOut: true })
+    ).toBe(
+      "⏸️ Paused for today: 🥗 Salad. It's back tomorrow. No habit numbered 9 is nudging right now. Anything you left out will keep nudging."
+    );
+  });
+
+  it("falls back to the hint when a pause reached nothing at all", () => {
+    expect(pauseConfirmation({ paused: [], missedNumbers: [], leftOut: false })).toBe(REPLY_HINT);
   });
 });
 

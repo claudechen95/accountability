@@ -31,7 +31,7 @@ import {
   PARTNER_ALERT_DELAY_MIN,
   type NudgeAnchor,
 } from "@/lib/nudges";
-import { SNOOZE_HINT } from "@/lib/snooze";
+import { REPLY_HINT } from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
 import { isCallConfigured, placeCall, getCallOutcome } from "@/lib/call";
 
@@ -91,12 +91,14 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
 
   if (dueTexts.length > 0) {
     const list = dueTexts.map((g) => `${g.nudgeNumber}. ${g.emoji} ${g.name}`).join("\n");
-    // Names the reply shape rather than inviting a free-form answer. Sendblue auto-detects
+    // Names both reply shapes rather than inviting a free-form answer. Sendblue auto-detects
     // stop/unsubscribe/cancel/opt out/revoke/end/quit and the carrier intercepts them ahead of
     // Sendblue on SMS: any of those permanently blocks every future message to this number,
     // transactional included, and never delivers the inbound webhook - so the ladder would keep
-    // calling and alerting the partner about texts that can no longer arrive.
-    await sendText(user.phone!, `⏰ Still pending:\n${list}\n${SNOOZE_HINT}`);
+    // calling and alerting the partner about texts that can no longer arrive. Offering "pause"
+    // is part of that defence: a user who means to skip today needs a word for it, or they
+    // improvise one, and the words people improvise are exactly the reserved ones.
+    await sendText(user.phone!, `⏰ Still pending:\n${list}\n${REPLY_HINT}`);
     steps.push("text");
   }
 

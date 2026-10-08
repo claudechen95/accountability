@@ -1,13 +1,26 @@
 import { formatHHMM, maxSnoozeUntil, MINUTES_PER_DAY } from "./nudges";
 
 /**
- * How a nudge text tells the user to push a reminder back. The shape is the whole command:
- * habit numbers, then a clock time. Several numbers share one time ("1 2 until 15:30"), and
- * several times can share one reply ("1 until 15:30 and 2 until 4pm").
+ * The whole grammar of a reply to a nudge text. Two shapes, and nothing else does anything:
  *
- * There is no "pause". A reply that isn't this shape changes nothing.
+ *   "1 2 until 15:30"  a delay. Several numbers share one time, and several times can share one
+ *                      reply ("1 until 15:30 and 2 until 4pm"). The ladder resumes afterwards,
+ *                      partner alert included.
+ *   "pause 1"          a deliberate skip. That habit is finished being asked about for the day:
+ *                      no more texts, no call, and no partner alert - the same full exit as
+ *                      answering the phone.
+ *
+ * Pause is here because a snooze needs a time the user intends to actually do the thing, and
+ * "I'm not doing it today, on purpose" has no such time. Without it the only exits were checking
+ * in and picking up the phone, so an intentional rest day was indistinguishable from ignoring
+ * the app, and the only reply that fit was a time the user knew was a lie.
+ *
+ * It is a quiet exit, and knowingly so: the partner is not told that a paused habit went
+ * unfinished. The scope is what keeps that honest - a pause only reaches habits that are nudging
+ * when it arrives, so it can never silence a question that hasn't been asked yet.
  */
-export const SNOOZE_HINT = `Snooze with the numbers and a time, e.g. "1 2 until 15:30".`;
+export const REPLY_HINT =
+  `Snooze with the numbers and a time, e.g. "1 2 until 15:30", or "pause 1" to skip it today.`;
 
 export interface SnoozeGroup {
   numbers: number[];
@@ -18,16 +31,22 @@ export interface SnoozeGroup {
   clockMins: number[];
 }
 
+/** One of the two commands, as the reply asked for it. */
+export type NudgeReply =
+  | { kind: "snooze"; groups: SnoozeGroup[] }
+  /** Empty numbers means a bare "pause": every habit that is nudging right now. */
+  | { kind: "pause"; numbers: number[] };
+
 const FILLER = new Set([
   "snooze", "please", "the", "for", "me", "to", "at", "until", "till", "til",
   "and", "by", "around", "about", "a",
+  // Enough of a sentence that "pause it today" and "pause all" read as the command they are.
+  "it", "them", "all", "today", "tonight",
 ]);
 
-/**
- * Reads a snooze reply into groups of habit numbers and a clock time.
- * Returns null for anything else, including "pause", "ok", a bare number, or a time with no numbers.
- */
-export function parseSnoozeReply(text: string): SnoozeGroup[] | null {
+const PAUSE_WORDS = new Set(["pause", "skip"]);
+
+function tokenize(text: string): string[] {
   const normalized = text
     .trim()
     .toLowerCase()
@@ -36,9 +55,41 @@ export function parseSnoozeReply(text: string): SnoozeGroup[] | null {
     .replace(/["“”']/g, "")
     .replace(/[.,]/g, " ")
     .replace(/#/g, "");
-  const tokens = normalized.split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return null;
+  return normalized.split(/\s+/).filter(Boolean);
+}
 
+/**
+ * Reads a reply into whichever of the two commands it is, or null for anything else - "ok", a
+ * bare number, a time with no numbers.
+ *
+ * A clock time is what separates the two, because that's what the difference between them *is*:
+ * a time means "later today", its absence means "not today". So "pause 1 until 4pm" is a snooze
+ * and the word is treated as filler, rather than being rejected for naming both at once.
+ */
+export function parseNudgeReply(text: string): NudgeReply | null {
+  const tokens = tokenize(text);
+  if (tokens.length === 0) return null;
+  if (tokens.some((t) => PAUSE_WORDS.has(t)) && !tokens.some((t) => parseTimeToken(t))) {
+    return parsePause(tokens);
+  }
+  const groups = parseSnoozeGroups(tokens);
+  return groups && { kind: "snooze", groups };
+}
+
+/** The numbers a pause named, or null if it was padded out with anything we can't read. */
+function parsePause(tokens: string[]): NudgeReply | null {
+  const numbers: number[] = [];
+  for (const token of tokens) {
+    if (PAUSE_WORDS.has(token) || FILLER.has(token)) continue;
+    if (!/^\d{1,2}$/.test(token)) return null;
+    const n = Number(token);
+    if (n < 1) return null;
+    numbers.push(n);
+  }
+  return { kind: "pause", numbers: Array.from(new Set(numbers)) };
+}
+
+function parseSnoozeGroups(tokens: string[]): SnoozeGroup[] | null {
   const groups: SnoozeGroup[] = [];
   let numbers: number[] = [];
 
@@ -50,7 +101,7 @@ export function parseSnoozeReply(text: string): SnoozeGroup[] | null {
   };
 
   for (const token of tokens) {
-    if (FILLER.has(token)) continue;
+    if (FILLER.has(token) || PAUSE_WORDS.has(token)) continue;
     const clockMins = parseTimeToken(token);
     if (clockMins) {
       if (!closeGroup(clockMins)) return null;
@@ -151,7 +202,55 @@ export function snoozeHold(
 }
 
 /**
- * What goes back to the user. `applied` is what was held and until when, `tooLate` the habits
+ * The two sentences both confirmations end with: what the reply asked for that matched nothing,
+ * and whether it left something still nudging. Shared so a pause and a snooze can't answer the
+ * same two questions in two different voices.
+ */
+function replyTail({
+  missedNumbers,
+  leftOut,
+}: {
+  missedNumbers: number[];
+  leftOut: boolean;
+}): string[] {
+  const parts: string[] = [];
+  if (missedNumbers.length === 1) {
+    parts.push(`No habit numbered ${missedNumbers[0]} is nudging right now.`);
+  } else if (missedNumbers.length > 1) {
+    parts.push(`No habits numbered ${missedNumbers.join(", ")} are nudging right now.`);
+  }
+  if (leftOut) parts.push("Anything you left out will keep nudging.");
+  return parts;
+}
+
+/**
+ * What goes back after a pause. Every habit it reached is named, because a pause is the one
+ * command that buys silence: if it took something the user didn't mean, this line is the only
+ * place they'd ever find out. "for today" is the honest extent - the mute is keyed to the nudge
+ * day, so tomorrow's ladder starts as normal.
+ */
+export function pauseConfirmation({
+  paused,
+  missedNumbers,
+  leftOut,
+}: {
+  paused: string[];
+  missedNumbers: number[];
+  leftOut: boolean;
+}): string {
+  const parts: string[] = [];
+  if (paused.length > 0) {
+    const back = paused.length === 1 ? "It's" : "They're";
+    parts.push(`Paused for today: ${paused.join(", ")}. ${back} back tomorrow.`);
+  }
+  parts.push(...replyTail({ missedNumbers, leftOut }));
+  if (parts.length === 0) return REPLY_HINT;
+  const body = parts.join(" ");
+  return paused.length > 0 ? `⏸️ ${body}` : body;
+}
+
+/**
+ * What goes back after a snooze. `applied` is what was held and until when, `tooLate` the habits
  * there was no room left to hold, `missedNumbers` the numbers that match nothing nudging, and
  * `leftOut` whether anything pending went unnamed.
  *
@@ -185,13 +284,8 @@ export function snoozeConfirmation({
   if (tooLate.length > 0) {
     parts.push(`Too late to snooze ${tooLate.join(", ")} tonight.`);
   }
-  if (missedNumbers.length === 1) {
-    parts.push(`No habit numbered ${missedNumbers[0]} is nudging right now.`);
-  } else if (missedNumbers.length > 1) {
-    parts.push(`No habits numbered ${missedNumbers.join(", ")} are nudging right now.`);
-  }
-  if (leftOut) parts.push("Anything you left out will keep nudging.");
-  if (parts.length === 0) return SNOOZE_HINT;
+  parts.push(...replyTail({ missedNumbers, leftOut }));
+  if (parts.length === 0) return REPLY_HINT;
   const body = parts.join(" ");
   return applied.length > 0 ? `✅ ${body}` : body;
 }

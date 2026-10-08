@@ -186,8 +186,8 @@ export function crossesMidnight(nudgeTime?: string): boolean {
  * window is not open-ended: a ladder that doesn't overhang midnight is dropped from the carryover
  * pass by crossesMidnight, and one that does is dropped once CARRYOVER_WINDOW_MIN is up. A hold
  * set beyond that is never cleared by anything, so the calls and the alert it was keeping waiting
- * simply never happen - a silent mute, which is exactly what replacing "pause" with a snooze was
- * meant to remove.
+ * simply never happen - an exit the user never asked for and nothing records. There *is* a way to
+ * ask for one ("pause", which writes a mute and says so), and this is not it.
  *
  * So back off the horizon by what the delayed ladder still needs: its tail, plus one retry
  * interval of slack because calls only go out on cron ticks and the first one lands on the tick

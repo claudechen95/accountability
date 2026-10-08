@@ -3,6 +3,7 @@ import { withPerf } from "@/lib/perf";
 import {
   findUserByPhone,
   setNudgeSnoozedUntil,
+  setNudgeMuted,
   getNudgeCandidates,
   getTodayDate,
   getPstMinutesNow,
@@ -10,12 +11,13 @@ import {
 } from "@/lib/kv";
 import { getPendingNudges, crossesMidnight, nudgeAnchors } from "@/lib/nudges";
 import {
-  SNOOZE_HINT,
-  parseSnoozeReply,
+  REPLY_HINT,
+  parseNudgeReply,
   soonestUntil,
   formatSnoozeWhen,
   snoozeHold,
   snoozeConfirmation,
+  pauseConfirmation,
 } from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
 
@@ -72,19 +74,44 @@ async function POSTHandler(req: Request) {
           }
         }
 
-        // Only the instructed shape does anything. "pause" and "ok" used to mute every habit
-        // that was nudging, for the rest of the day; they now get the instructions back and
-        // the ladder keeps going.
-        const groups = parseSnoozeReply(reply);
+        // Only the two instructed shapes do anything. Anything else - "ok", "on it" - gets the
+        // instructions back and leaves the ladder running.
+        const parsed = parseNudgeReply(reply);
         let body_: string;
-        if (!groups) {
-          body_ = pending.length > 0 ? SNOOZE_HINT : `Nothing's nudging you right now. ${SNOOZE_HINT}`;
+        if (!parsed) {
+          body_ = pending.length > 0 ? REPLY_HINT : `Nothing's nudging you right now. ${REPLY_HINT}`;
+        } else if (pending.length === 0) {
+          // A well-formed command with nothing to apply it to. Worth saying outright, since a
+          // bare hint back reads as "you got the words wrong" when the words were fine.
+          body_ = `Nothing's nudging you right now. ${REPLY_HINT}`;
+        } else if (parsed.kind === "pause") {
+          // A pause is the same full exit as answering the phone (setNudgeMuted): no further
+          // texts, no call, and no place in the partner alert. Scoped exactly like a snooze -
+          // only habits already nudging - because a reply can only be about a question that has
+          // been asked. A bare "pause" means all of those, which is every habit this reply
+          // could plausibly be about.
+          const named = parsed.numbers;
+          const targets =
+            named.length === 0
+              ? pending
+              : pending.filter((p) => p.goal.nudgeNumber != null && named.includes(p.goal.nudgeNumber));
+          const paused = new Map<string, string>();
+          for (const hit of targets) {
+            await setNudgeMuted(uid, hit.goal.id, hit.date);
+            paused.set(`${hit.date}:${hit.goal.id}`, `${hit.goal.emoji} ${hit.goal.name}`);
+          }
+          const matched = new Set(targets.map((t) => t.goal.nudgeNumber));
+          body_ = pauseConfirmation({
+            paused: Array.from(paused.values()),
+            missedNumbers: named.filter((n) => !matched.has(n)),
+            leftOut: pending.some((p) => !paused.has(`${p.date}:${p.goal.id}`)),
+          });
         } else {
           const applied = new Map<string, { label: string; when: string; capped: boolean }>();
           const tooLate = new Map<string, string>();
           const missed = new Set<number>();
           const matched = new Set<number>();
-          for (const group of groups) {
+          for (const group of parsed.groups) {
             const wallUntil = soonestUntil(group.clockMins, wallNow);
             for (const n of group.numbers) {
               const hits = pending.filter((p) => p.goal.nudgeNumber === n);
