@@ -659,6 +659,54 @@ describe("a ladder that runs past midnight", () => {
   });
 });
 
+describe("a habit with its own gap between texts", () => {
+  // The spread from midnight lands the second text at 07:20. A gap of 30 keeps the three texts
+  // in the hour after the reminder, then the call and the partner text follow on the same clock.
+  it("texts every 30 minutes from midnight, then calls", async () => {
+    fakeRedis.seed("tester:goals", [{ ...salad, nudgeTime: "00:00", nudgeIntervalMin: 30 }]);
+    const log: string[] = [];
+    for (let m = 0; m <= toMin("02:10"); m += 10) {
+      const at = fmt(m);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `00:00 text→${PHONE}`,
+      `00:30 text→${PHONE}`,
+      `01:00 text→${PHONE}`,
+      `01:10 call→${PHONE}`,
+      `01:20 call→${PHONE}`,
+      `01:30 call→${PHONE}`,
+      `02:00 text→${PARTNER}`,
+    ]);
+  });
+
+  // 22:00 with the spread finishes before midnight, so the carryover pass would drop it. A 45
+  // minute gap reaches 00:30, and that only happens if the overnight pass knows about the gap.
+  it("keeps a wide evening gap running after midnight", async () => {
+    fakeRedis.seed("tester:goals", [{ ...salad, nudgeTime: "22:00", nudgeIntervalMin: 45 }]);
+    const log: string[] = [];
+    for (let m = toMin("22:00"); m <= toMin("24:40"); m += 10) {
+      const at = fmt(m);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log).toEqual([
+      `22:00 text→${PHONE}`,
+      `22:50 text→${PHONE}`, // the 22:45 slot, on the first tick at or after it
+      `23:30 text→${PHONE}`,
+      `23:40 call→${PHONE}`,
+      `23:50 call→${PHONE}`,
+      `24:00 call→${PHONE}`,
+      `24:30 text→${PARTNER}`,
+    ]);
+  });
+});
+
 describe("idempotence", () => {
   // Overlapping or retried cron invocations are the reason every step claims its slot before
   // sending. Ten identical ticks at one slot time must produce exactly one message.

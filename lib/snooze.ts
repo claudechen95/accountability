@@ -191,11 +191,12 @@ export function snoozeHold(
   wallUntilMin: number,
   wallNowMin: number,
   carryover: boolean,
-  nudgeTime?: string
+  nudgeTime?: string,
+  intervalMin?: number | null
 ): SnoozeHold | null {
   const offset = carryover ? MINUTES_PER_DAY : 0;
   const requested = wallUntilMin + offset;
-  const until = Math.min(requested, maxSnoozeUntil(nudgeTime));
+  const until = Math.min(requested, maxSnoozeUntil(nudgeTime, intervalMin));
   const wall = until - offset;
   if (wall <= wallNowMin) return null;
   return { until, wall, capped: until < requested };

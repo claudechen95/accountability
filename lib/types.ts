@@ -6,6 +6,10 @@ export interface Goal {
   targetCount: number; // how many times per period
   nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only
   nudgeTime?: string;  // "HH:MM" PST 24hr, default "21:00"
+  // Minutes between the three reminder texts. Absent means spread them from nudgeTime toward
+  // 10pm, which is what every habit did before this existed. A set value is a fixed gap, so a
+  // midnight habit can remind at 12:00, 12:30 and 1:00 instead of 12:00, 7:20am and 2:40pm.
+  nudgeIntervalMin?: number | null;
   nudgeEnabled?: boolean; // daily goals only; opt out of the daily pending-nudge modal, default true
   nudgeNumber?: number; // stable per-user 1..N id shown/used in text nudges, e.g. "reply 2"; renumbered compactly whenever a goal is added or removed
   type?: "mood";

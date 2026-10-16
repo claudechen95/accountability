@@ -2,7 +2,8 @@ import type { NudgeCandidate } from "./types";
 import { addDaysToDateStr, dayOfWeek } from "./dates";
 
 // The escalation ladder for one unfinished habit, per day:
-//   1-3. three texts, spread evenly from the habit's nudgeTime toward DAY_END
+//   1-3. three texts. By default spread evenly from the habit's nudgeTime toward DAY_END;
+//        a habit with nudgeIntervalMin uses that many minutes between texts instead
 //   4.   a phone call ladder, starting a tick after that habit's last text
 //   5.   a text to the user's accountability partner, PARTNER_ALERT_DELAY_MIN after the last call
 // Everything here is pure - the weekday, clock, and habit list are passed in - so the dispatch
@@ -120,15 +121,40 @@ export function formatHHMM(minutes: number): string {
 }
 
 /**
+ * The fixed gap between the three texts, or undefined when the habit still spreads them.
+ *
+ * A requested gap is pulled into range rather than refused. Below MIN_SLOT_GAP_MIN the three
+ * texts would land inside one or two cron ticks and read as a single reminder. Above the cap
+ * the partner alert would fall at or after the carryover window closes (the last tick that
+ * still looks at yesterday is 10 minutes before that), so the calls and the alert would quietly
+ * never happen. The largest gap that still finishes on that tick is what gets used instead.
+ */
+export function textGap(nudgeTime?: string, intervalMin?: number | null): number | undefined {
+  if (intervalMin == null || !Number.isFinite(intervalMin)) return undefined;
+  const start = toMinutes(nudgeTime ?? DEFAULT_NUDGE_TIME);
+  const tail = (MAX_CALL_ATTEMPTS - 1) * CALL_RETRY_MIN + PARTNER_ALERT_DELAY_MIN;
+  // The dispatch tick is every 10 minutes, and the carryover pass stops once nowMin reaches
+  // CARRYOVER_WINDOW_MIN. The last tick that can still finish this ladder is one tick before that.
+  const lastTick = MINUTES_PER_DAY + CARRYOVER_WINDOW_MIN - CALL_RETRY_MIN;
+  const maxGap = Math.floor((lastTick - tail - ESCALATION_DELAY_MIN - start) / (NUDGE_TEXT_COUNT - 1));
+  return Math.min(Math.max(Math.round(intervalMin), MIN_SLOT_GAP_MIN), Math.max(maxGap, MIN_SLOT_GAP_MIN));
+}
+
+/**
  * The three text sends for one habit, as minutes from its nudge day's midnight.
  *
  * Deriving the times from the habit rather than from the dispatch tick is what guarantees
  * exactly three reminders before the call however the habit is configured: set to 9am they land
  * 4h20m apart, set to 9pm 20 minutes apart, set to 11:30pm 20 minutes apart with the last one
- * falling after midnight.
+ * falling after midnight. A habit that names its own gap (nudgeIntervalMin) keeps that spacing
+ * instead of the spread, so a midnight reminder can be half an hour apart rather than seven.
  */
-export function nudgeSlots(nudgeTime?: string): number[] {
+export function nudgeSlots(nudgeTime?: string, intervalMin?: number | null): number[] {
   const start = toMinutes(nudgeTime ?? DEFAULT_NUDGE_TIME);
+  const gap = textGap(nudgeTime, intervalMin);
+  if (gap != null) {
+    return Array.from({ length: NUDGE_TEXT_COUNT }, (_, i) => start + i * gap);
+  }
   // Spread toward the day's end, but never tighter than MIN_SLOT_GAP_MIN - which for a habit
   // configured close to (or past) DAY_END means running on into the next calendar day rather
   // than compressing three reminders into a few minutes or collapsing them into one.
@@ -152,8 +178,8 @@ export function dueSlotIndices(slots: number[], nowMin: number): number[] {
  * like the text slots - a habit's escalation is a consequence of its own reminders going
  * unanswered, and shouldn't wait on an unrelated habit that nudges later in the evening.
  */
-export function habitCallStart(nudgeTime?: string): number {
-  const slots = nudgeSlots(nudgeTime);
+export function habitCallStart(nudgeTime?: string, intervalMin?: number | null): number {
+  const slots = nudgeSlots(nudgeTime, intervalMin);
   return slots[slots.length - 1] + ESCALATION_DELAY_MIN;
 }
 
@@ -169,13 +195,13 @@ export const LADDER_TAIL_MIN = (MAX_CALL_ATTEMPTS - 1) * CALL_RETRY_MIN + PARTNE
  * plus the partner-alert wait. Used only to decide whether a ladder overhangs midnight and so
  * needs yesterday's pass; the real end can be later, which CARRYOVER_WINDOW_MIN allows for.
  */
-export function ladderEnd(nudgeTime?: string): number {
-  return habitCallStart(nudgeTime) + LADDER_TAIL_MIN;
+export function ladderEnd(nudgeTime?: string, intervalMin?: number | null): number {
+  return habitCallStart(nudgeTime, intervalMin) + LADDER_TAIL_MIN;
 }
 
 /** True when this habit's ladder runs past midnight into the next calendar date. */
-export function crossesMidnight(nudgeTime?: string): boolean {
-  return ladderEnd(nudgeTime) >= MINUTES_PER_DAY;
+export function crossesMidnight(nudgeTime?: string, intervalMin?: number | null): boolean {
+  return ladderEnd(nudgeTime, intervalMin) >= MINUTES_PER_DAY;
 }
 
 /**
@@ -197,8 +223,8 @@ export function crossesMidnight(nudgeTime?: string): boolean {
  * its horizon, by construction - a 23:59 habit still finishes by 01:39), so clamping can never
  * leave a habit with no snooze available at all.
  */
-export function maxSnoozeUntil(nudgeTime?: string): number {
-  const horizon = MINUTES_PER_DAY + (crossesMidnight(nudgeTime) ? CARRYOVER_WINDOW_MIN : 0);
+export function maxSnoozeUntil(nudgeTime?: string, intervalMin?: number | null): number {
+  const horizon = MINUTES_PER_DAY + (crossesMidnight(nudgeTime, intervalMin) ? CARRYOVER_WINDOW_MIN : 0);
   return horizon - LADDER_TAIL_MIN - CALL_RETRY_MIN;
 }
 

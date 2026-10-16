@@ -23,6 +23,7 @@ import { CSS } from "@dnd-kit/utilities";
 import versionData from "@/version.json";
 import type { Goal, GoalStatus, ReflectionPrompt } from "@/lib/types";
 import type { VacationWindow } from "@/lib/kv";
+import { habitCallStart, nudgeSlots, MINUTES_PER_DAY } from "@/lib/nudges";
 import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
 import { timedFetch, logFirstData } from "@/lib/client-perf";
 
@@ -100,11 +101,32 @@ function HabitForm({
   const [nudgeDays, setNudgeDays] = useState<number[]>(initial?.nudgeDays ?? []);
   const [nudgeTime, setNudgeTime] = useState(initial?.nudgeTime ?? "21:00");
   const [nudgeEnabled, setNudgeEnabled] = useState(initial?.nudgeEnabled ?? true);
+  const [intervalText, setIntervalText] = useState(
+    initial?.nudgeIntervalMin != null ? String(initial.nudgeIntervalMin) : ""
+  );
 
   const toggleNudgeDay = (day: number) =>
     setNudgeDays((prev) => prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]);
 
   const nudgeActive = frequency === "daily" ? nudgeEnabled : nudgeDays.length > 0;
+  const requestedGap = intervalText.trim() === "" ? undefined : Number(intervalText);
+  const gapIsSet = requestedGap != null && Number.isFinite(requestedGap);
+  const previewSlots = nudgeSlots(nudgeTime, gapIsSet ? requestedGap : undefined);
+  const previewCall = habitCallStart(nudgeTime, gapIsSet ? requestedGap : undefined);
+  const spreadSlots = nudgeSlots(nudgeTime);
+  const actualGap = previewSlots[1] - previewSlots[0];
+
+  // Same clock as the time field, which the browser draws in the user's own hour cycle.
+  // 24-hour "00:00" next to a picker that says "12:00 AM" reads as two different times.
+  const clockLabel = (min: number) => {
+    const wrapped = ((min % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+    const formatted = new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(2000, 0, 1, Math.floor(wrapped / 60), wrapped % 60));
+    return min >= MINUTES_PER_DAY ? `${formatted} next day` : formatted;
+  };
+  const listTimes = (slots: number[]) => slots.map(clockLabel).join(", ");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -118,6 +140,12 @@ function HabitForm({
       nudgeDays: frequency === "weekly" ? nudgeDays : undefined,
       nudgeEnabled: frequency === "daily" ? nudgeEnabled : undefined,
       nudgeTime: nudgeActive ? nudgeTime : undefined,
+      // null clears a gap that was saved before, which is what puts the habit back on the
+      // spread-until-10pm schedule. Omitting the field would leave the old gap in place.
+      // Store the gap the preview actually uses. A typed 5 is kept at the 20-minute floor and a
+      // gap that would run past the overnight window is pulled back, so the field and the texts
+      // stay the same number after a reload.
+      nudgeIntervalMin: nudgeActive && gapIsSet ? actualGap : null,
     });
   };
 
@@ -238,10 +266,31 @@ function HabitForm({
               className="border border-gray-200 rounded-xl px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-300"
             />
           </div>
+          <div className="flex items-center justify-between gap-3 mt-3">
+            <label htmlFor="nudge-gap" className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+              Between texts
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id="nudge-gap"
+                type="number"
+                inputMode="numeric"
+                step={1}
+                value={intervalText}
+                placeholder="spread"
+                onChange={(e) => setIntervalText(e.target.value)}
+                className="w-20 border border-gray-200 rounded-xl px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-300"
+              />
+              <span className="text-xs text-gray-400">min</span>
+            </div>
+          </div>
           <p className="text-xs text-gray-400 mt-1.5">
-            {nudgeTime > "21:00"
-              ? "3 texts, 20 min apart, then a call - carrying past midnight if it has to."
-              : "3 texts, spread from then until 10pm, then a call."}
+            Texts at {listTimes(previewSlots)}, then a call at {clockLabel(previewCall)}.
+            {gapIsSet
+              ? actualGap !== Math.round(requestedGap)
+                ? ` That's ${actualGap} min, the closest gap that still fits. Clear it for ${listTimes(spreadSlots)} instead.`
+                : ` Clear it for ${listTimes(spreadSlots)} instead.`
+              : " Leave this blank to keep that spacing."}
           </p>
         </div>
       )}

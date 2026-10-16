@@ -64,11 +64,20 @@ async function POSTHandler(req: Request) {
         const pending: {
           date: string;
           carryover: boolean;
-          goal: { id: string; emoji: string; name: string; nudgeNumber?: number; nudgeTime?: string };
+          goal: {
+            id: string;
+            emoji: string;
+            name: string;
+            nudgeNumber?: number;
+            nudgeTime?: string;
+            nudgeIntervalMin?: number | null;
+          };
         }[] = [];
         for (const a of nudgeAnchors(wallNow, getTodayDate())) {
           const candidates = await getNudgeCandidates(a.date, uid);
-          const inPlay = a.carryover ? candidates.filter((g) => crossesMidnight(g.nudgeTime)) : candidates;
+          const inPlay = a.carryover
+            ? candidates.filter((g) => crossesMidnight(g.nudgeTime, g.nudgeIntervalMin))
+            : candidates;
           for (const goal of getPendingNudges(inPlay, a.dow, a.nowMin)) {
             pending.push({ date: a.date, carryover: a.carryover, goal });
           }
@@ -127,7 +136,13 @@ async function POSTHandler(req: Request) {
                 const label = `${hit.goal.emoji} ${hit.goal.name}`;
                 // Clamped per habit, since how late a hold can run depends on how late that
                 // habit's own ladder reaches.
-                const hold = snoozeHold(wallUntil, wallNow, hit.carryover, hit.goal.nudgeTime);
+                const hold = snoozeHold(
+                  wallUntil,
+                  wallNow,
+                  hit.carryover,
+                  hit.goal.nudgeTime,
+                  hit.goal.nudgeIntervalMin
+                );
                 if (!hold) {
                   tooLate.set(key, label);
                   continue;

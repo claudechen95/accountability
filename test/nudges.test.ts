@@ -3,6 +3,7 @@ import {
   getPendingNudges,
   habitCallStart,
   nudgeSlots,
+  textGap,
   dueSlotIndices,
   callScript,
   nextCallTime,
@@ -155,6 +156,46 @@ describe("nudgeSlots", () => {
     // Minutes, not the clock face: the third text is on the next calendar date and has to sort
     // *after* the first two, which is the whole reason these aren't strings.
     expect(nudgeSlots("23:30")[2]).toBe(MINUTES_PER_DAY + 10);
+  });
+
+  // A blank gap keeps the spread. A number is the minutes between the three texts, which is
+  // what a midnight habit needs: spread from 00:00 reaches 7:20 and 14:40, half an hour apart
+  // stays in the small hours.
+  it("uses a habit's own gap instead of spreading the day", () => {
+    expect(clock(nudgeSlots("00:00", 30))).toEqual(["00:00", "00:30", "01:00"]);
+    expect(habitCallStart("00:00", 30)).toBe(at("01:10"));
+    expect(nudgeSlots("09:00", 45)).toEqual([at("09:00"), at("09:45"), at("10:30")]);
+  });
+
+  it("treats an empty gap as the spread, including null", () => {
+    expect(nudgeSlots("18:00", null)).toEqual(nudgeSlots("18:00"));
+    expect(nudgeSlots("18:00", undefined)).toEqual(nudgeSlots("18:00"));
+  });
+
+  it("never packs a chosen gap tighter than the floor", () => {
+    expect(textGap("00:00", 5)).toBe(MIN_SLOT_GAP_MIN);
+    expect(nudgeSlots("00:00", 5)).toEqual(nudgeSlots("00:00", MIN_SLOT_GAP_MIN));
+  });
+
+  it("pulls a gap back when the ladder would finish after the carryover window", () => {
+    // 23:50 plus two hours would still be texting well after 3am, which is when yesterday's
+    // ladder stops being looked at. The gap that gets used is the widest one whose partner
+    // alert still lands on a tick inside that window.
+    const gap = textGap("23:50", 120)!;
+    expect(gap).toBeLessThan(120);
+    expect(gap).toBeGreaterThanOrEqual(MIN_SLOT_GAP_MIN);
+    const end = ladderEnd("23:50", 120);
+    expect(end).toBeLessThanOrEqual(MINUTES_PER_DAY + CARRYOVER_WINDOW_MIN - 10);
+    expect(nudgeSlots("23:50", 120)[1] - nudgeSlots("23:50", 120)[0]).toBe(gap);
+  });
+
+  it("makes a wide evening gap cross midnight when the spread schedule would not", () => {
+    // 22:00 spread finishes at 23:40, still the same evening. 45 minutes apart reaches 00:30.
+    expect(crossesMidnight("22:00")).toBe(false);
+    expect(crossesMidnight("22:00", 45)).toBe(true);
+    expect(ladderEnd("22:00", 45)).toBe(MINUTES_PER_DAY + at("00:30"));
+    expect(maxSnoozeUntil("22:00")).toBe(at("23:00"));
+    expect(maxSnoozeUntil("22:00", 45)).toBe(MINUTES_PER_DAY + at("02:00"));
   });
 });
 

@@ -48,7 +48,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   const steps: Step[] = [];
 
   const candidates = await getNudgeCandidates(date, uid);
-  const inPlay = carryover ? candidates.filter((g) => crossesMidnight(g.nudgeTime)) : candidates;
+  const inPlay = carryover ? candidates.filter((g) => crossesMidnight(g.nudgeTime, g.nudgeIntervalMin)) : candidates;
   if (inPlay.length === 0) return steps;
 
   // A habit the user has already answered about is out of the ladder entirely - no texts, no
@@ -71,7 +71,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
     const until = snoozeUntils[i];
     if (until != null && nowMin < until) {
       held = true;
-      const indices = dueSlotIndices(nudgeSlots(pending[i].nudgeTime), nowMin);
+      const indices = dueSlotIndices(nudgeSlots(pending[i].nudgeTime, pending[i].nudgeIntervalMin), nowMin);
       await Promise.all(indices.map((slot) => claimNudgeSlot(uid, pending[i].id, date, slot)));
     } else {
       active.push(pending[i]);
@@ -84,7 +84,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   // first text on the same tick another habit is being called about.
   const dueTexts: typeof active = [];
   for (const g of active) {
-    const indices = dueSlotIndices(nudgeSlots(g.nudgeTime), nowMin);
+    const indices = dueSlotIndices(nudgeSlots(g.nudgeTime, g.nudgeIntervalMin), nowMin);
     const claims = await Promise.all(indices.map((i) => claimNudgeSlot(uid, g.id, date, i)));
     if (claims.some(Boolean)) dueTexts.push(g);
   }
@@ -121,7 +121,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   };
 
   for (const g of active) {
-    const start = habitCallStart(g.nudgeTime);
+    const start = habitCallStart(g.nudgeTime, g.nudgeIntervalMin);
     if (nowMin < start) {
       attemptsRemain = true; // its texts are still running
       continue;
