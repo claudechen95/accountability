@@ -5,7 +5,7 @@ import {
   getAllWeeklyNotes,
   saveWeeklyNote,
   deleteWeeklyNote,
-  getCurrentWeekKey,
+  getLatestNoteWeekKey,
   getWeekLabel,
   resolveUser,
 } from "@/lib/kv";
@@ -31,8 +31,12 @@ async function GETHandler(req: Request) {
       );
     }
 
-    const notes = await getAllWeeklyNotes(52, user);
-    return NextResponse.json(notes);
+    // The page opens on the last few weeks and asks for more by hand, so the limit comes from
+    // the client. `total` is what tells it whether there's anything left to ask for.
+    const limitParam = Number(searchParams.get("limit"));
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 52) : 52;
+    const { notes, total } = await getAllWeeklyNotes(limit, user);
+    return NextResponse.json({ notes, total });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Failed to load notes" }, { status: 500 });
@@ -48,6 +52,16 @@ async function POSTHandler(req: Request) {
 
     if (!week) {
       return NextResponse.json({ error: "Week is required" }, { status: 400 });
+    }
+
+    // A note can only be *started* for last week or earlier. An existing note stays editable
+    // whatever week it's filed under, so a note written for a current week before this rule
+    // existed can't be stranded read-only.
+    if (week > getLatestNoteWeekKey() && !(await getWeeklyNote(week, user))) {
+      return NextResponse.json(
+        { error: "Notes can only be written for last week or earlier." },
+        { status: 400 }
+      );
     }
 
     // Drop blank bullets rather than storing them - a trailing newline in a textarea shouldn't

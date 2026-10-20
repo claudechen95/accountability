@@ -6,13 +6,17 @@ import { timedFetch } from "@/lib/client-perf";
 
 const PST = "America/Los_Angeles";
 
-// ISO-8601 week key - must stay in step with getWeekKey in lib/kv.ts, which is what the notes
-// API actually reads and writes. See the comment there for why ISO is the convention.
-function getWeekKeyForDate(date: Date): string {
-  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: PST })
-    .format(date)
-    .split("-")
-    .map(Number);
+function todayInPst(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: PST }).format(new Date());
+}
+
+// ISO-8601 week key for a YYYY-MM-DD - must stay in step with getWeekKey in lib/kv.ts, which is
+// what the notes API actually reads and writes. See the comment there for why ISO is the
+// convention. It takes the date as a string rather than a Date so the PST conversion happens
+// once, at the edge: a bare `new Date("2026-10-12")` is UTC midnight, which reads back as the
+// day before out here.
+function weekKeyForDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
 
   const thursday = new Date(Date.UTC(y, m - 1, d));
   thursday.setUTCDate(thursday.getUTCDate() - ((thursday.getUTCDay() + 6) % 7) + 3);
@@ -26,7 +30,7 @@ function getWeekKeyForDate(date: Date): string {
 }
 
 // Inverse of the above: week 1 is the week containing Jan 4, so its Monday is the Monday on or
-// before Jan 4. Already ISO-correct - it was getWeekKeyForDate that disagreed with it.
+// before Jan 4. Already ISO-correct - it was weekKeyForDate that disagreed with it.
 function getMondayOfWeek(weekKey: string): Date {
   const [year, weekStr] = weekKey.split("-W");
   const week = parseInt(weekStr, 10);
@@ -48,14 +52,24 @@ function weekLabel(weekKey: string): string {
   return `${fmt(monday)} – ${fmt(sunday)}`;
 }
 
-function recentWeekOptions(n = 6): { key: string; label: string; rel: string }[] {
-  const now = new Date();
-  return Array.from({ length: n }, (_, i) => {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i * 7);
-    const key = getWeekKeyForDate(d);
-    const rel = i === 0 ? "This week" : i === 1 ? "Last week" : `${i} weeks ago`;
-    return { key, label: weekLabel(key), rel };
+// The Monday of the week containing dateStr, shifted by weekOffset weeks. A week is what's being
+// picked, and an ISO week starts on Monday, so this is the only date the selector ever holds.
+function mondayOfDate(dateStr: string, weekOffset = 0): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const monday = new Date(Date.UTC(y, m - 1, d));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7) + weekOffset * 7);
+  return monday.toISOString().slice(0, 10);
+}
+
+// A note is the write-up of a week that has finished, so the two weeks offered outright are last
+// week and the one before it - never the week in progress. Anything older goes through the date
+// selector, which is the same ceiling by a different route. `getLatestNoteWeekKey` in lib/kv.ts
+// is the server half of that rule.
+function quickWeekOptions(): { key: string; label: string; rel: string }[] {
+  const today = todayInPst();
+  return [1, 2].map((i) => {
+    const key = weekKeyForDate(mondayOfDate(today, -i));
+    return { key, label: weekLabel(key), rel: i === 1 ? "Last week" : "Two weeks ago" };
   });
 }
 
@@ -172,29 +186,59 @@ function WeekPicker({
   onPick: (weekKey: string) => void;
   onCancel: () => void;
 }) {
-  const options = recentWeekOptions(6);
+  // The latest Monday a note can be written for, which is also the selector's ceiling.
+  const latestMonday = mondayOfDate(todayInPst(), -1);
+  const [picked, setPicked] = useState("");
+  const pickedKey = picked ? weekKeyForDate(picked) : null;
+
+  // Any day the user lands on means the week it falls in, so the value snaps back to that week's
+  // Monday - the field shows what was actually selected rather than the tap that got there. The
+  // clamp is for a typed-in date, which `max` alone doesn't stop.
+  const handleDate = (value: string) => {
+    if (!value) return setPicked("");
+    const monday = mondayOfDate(value);
+    setPicked(monday > latestMonday ? latestMonday : monday);
+  };
+
+  const row = (key: string, rel: string, label: string) => (
+    <button
+      key={key}
+      onClick={() => onPick(key)}
+      className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/40 transition-colors text-left"
+    >
+      <div>
+        <span className="text-sm font-medium text-gray-800">{rel}</span>
+        <span className="text-xs text-gray-400 ml-2">{label}</span>
+      </div>
+      {existingWeeks.has(key) && (
+        <span className="text-[10px] text-indigo-400 font-medium">has note</span>
+      )}
+    </button>
+  );
+
   return (
     <div className="rounded-2xl border border-indigo-200 bg-white shadow-sm p-5 space-y-3 mb-4">
-      <p className="text-sm font-semibold text-gray-700">Which week are you writing about?</p>
+      <div>
+        <p className="text-sm font-semibold text-gray-700">Which week are you writing about?</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          A note covers a finished week, so last week is the most recent one.
+        </p>
+      </div>
       <div className="space-y-2">
-        {options.map(({ key, label, rel }) => {
-          const hasNote = existingWeeks.has(key);
-          return (
-            <button
-              key={key}
-              onClick={() => onPick(key)}
-              className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/40 transition-colors text-left"
-            >
-              <div>
-                <span className="text-sm font-medium text-gray-800">{rel}</span>
-                <span className="text-xs text-gray-400 ml-2">{label}</span>
-              </div>
-              {hasNote && (
-                <span className="text-[10px] text-indigo-400 font-medium">has note</span>
-              )}
-            </button>
-          );
-        })}
+        {quickWeekOptions().map(({ key, label, rel }) => row(key, rel, label))}
+      </div>
+      <div className="pt-1 space-y-2">
+        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          Or an earlier week
+        </label>
+        <input
+          type="date"
+          value={picked}
+          max={latestMonday}
+          onChange={(e) => handleDate(e.target.value)}
+          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+        />
+        {pickedKey && row(pickedKey, "Write about", weekLabel(pickedKey))}
       </div>
       <button onClick={onCancel} className="text-xs text-gray-400 hover:text-gray-600 underline w-full text-center pt-1">
         cancel
@@ -285,32 +329,165 @@ function NoteCard({ note, onEdit }: { note: WeeklyNote; onEdit: () => void }) {
   );
 }
 
+/**
+ * Write last week's note for both people from a recording of the meeting.
+ *
+ * The meeting is the two of them going over each other's habits, so one call produces both notes
+ * - there's no version of this that writes only the half you're looking at. It writes straight
+ * away rather than showing a draft: the note it produces is editable from the card below the
+ * moment it lands, so a preview step would just be a slower way to reach the same edit.
+ *
+ * It only appears for the two people whose meeting it is. There's no auth here, so that's
+ * decluttering rather than a permission - it would still work if someone else found it.
+ */
+function FathomImport({ onWritten }: { onWritten: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const res = await timedFetch("/api/meeting-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't write the notes.");
+      setDone(data.weekLabel);
+      setUrl("");
+      setOpen(false);
+      onWritten();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't write the notes.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <div className="pt-2 space-y-1.5">
+        <button
+          onClick={() => { setOpen(true); setDone(null); setError(null); }}
+          className="w-full py-2.5 rounded-xl border border-dashed border-gray-300 text-sm text-gray-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50/40 transition-colors"
+        >
+          🎙️ Write up a recorded meeting
+        </button>
+        {done && (
+          <p className="text-xs text-emerald-600 text-center">
+            Wrote {done} for both of you.
+          </p>
+        )}
+        {error && <p className="text-xs text-red-600 text-center">{error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-2xl border border-indigo-200 bg-white shadow-sm p-4 space-y-3">
+      <div>
+        <p className="text-sm font-semibold text-gray-700">Paste the Fathom link</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Reads the transcript and writes last week&rsquo;s note for both of you. Action items
+          only come from habits you actually track.
+        </p>
+      </div>
+      <input
+        type="url"
+        inputMode="url"
+        placeholder="https://fathom.video/share/…"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        disabled={busy}
+        autoFocus
+        className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300 disabled:bg-gray-50"
+      />
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      <div className="flex gap-2">
+        <button
+          onClick={run}
+          disabled={busy || !url.trim()}
+          className="flex-1 bg-indigo-600 text-white rounded-xl py-2 text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+        >
+          {busy ? "Reading the call…" : "Write the notes"}
+        </button>
+        <button
+          onClick={() => { setOpen(false); setError(null); }}
+          disabled={busy}
+          className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+      {busy && (
+        <p className="text-xs text-gray-400">
+          A half-hour call takes a minute or so - leave this open.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// The two people whose weekly meeting this is. Alan's namespace is the un-prefixed one, so his
+// `userId` arrives as undefined (see `resolveUser` in lib/kv.ts).
+const MEETING_PAIR = new Set([undefined, "alan", "claude"]);
+
+// The page opens on the last three weeks. Older notes are history rather than something the
+// user came here to read, so they're a tap away instead of in the first payload.
+const INITIAL_WEEKS = 3;
+const MORE_WEEKS = 3;
+
 export function NotesPage({ userId }: { userId?: string }) {
   const [notes, setNotes] = useState<WeeklyNote[]>([]);
+  const [total, setTotal] = useState(0);
+  const [limit, setLimit] = useState(INITIAL_WEEKS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editingWeek, setEditingWeek] = useState<string | null>(null);
+  const [editingNote, setEditingNote] = useState<WeeklyNote | null>(null);
   const [pickingWeek, setPickingWeek] = useState(false);
   const [newWeekKey, setNewWeekKey] = useState<string | null>(null);
 
   const q = userId ? `?user=${encodeURIComponent(userId)}` : "";
+  const sep = q ? "&" : "?";
 
   const load = useCallback(() => {
     setLoading(true);
-    timedFetch(`/api/notes${q}`)
+    timedFetch(`/api/notes${q}${sep}limit=${limit}`)
       .then((r) => r.json())
-      .then((data) => setNotes(data))
+      .then((data) => {
+        setNotes(data.notes);
+        setTotal(data.total);
+      })
       .catch(() => setError("Couldn't load notes."))
       .finally(() => setLoading(false));
-  }, [q]);
+  }, [q, sep, limit]);
 
   useEffect(() => { load(); }, [load]);
 
   const existingWeeks = new Set(notes.map((n) => n.week));
 
-  const handlePickWeek = (weekKey: string) => {
+  // A week older than the page has loaded is still a week that may already have a note, and
+  // opening the blank form on it would overwrite what's there. So an unloaded week is fetched
+  // on its own before deciding - `updatedAt` is what separates a stored note from the empty
+  // shell the API answers with when there is none.
+  const handlePickWeek = async (weekKey: string) => {
     setPickingWeek(false);
     if (existingWeeks.has(weekKey)) {
+      setEditingNote(notes.find((n) => n.week === weekKey) ?? null);
+      setEditingWeek(weekKey);
+      return;
+    }
+    const res = await timedFetch(`/api/notes${q}${sep}week=${weekKey}`);
+    const note: WeeklyNote = await res.json();
+    if (typeof note.updatedAt === "number") {
+      setEditingNote(note);
       setEditingWeek(weekKey);
     } else {
       setNewWeekKey(weekKey);
@@ -350,7 +527,21 @@ export function NotesPage({ userId }: { userId?: string }) {
         </div>
       )}
 
-      {loading && (
+      {/* A note picked from the week selector can be older than the page has loaded, so it has
+          no card in the list below to turn into a form. It gets edited up here instead. */}
+      {editingWeek && editingNote && !existingWeeks.has(editingWeek) && (
+        <div className="mb-4">
+          <NoteForm
+            initial={editingNote}
+            weekKey={editingWeek}
+            userId={userId}
+            onSave={() => { setEditingWeek(null); setEditingNote(null); load(); }}
+            onCancel={() => { setEditingWeek(null); setEditingNote(null); }}
+          />
+        </div>
+      )}
+
+      {loading && notes.length === 0 && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <div key={i} className="rounded-2xl bg-white border border-gray-200 p-5 h-24 animate-pulse" />
@@ -386,11 +577,26 @@ export function NotesPage({ userId }: { userId?: string }) {
               <NoteCard
                 key={note.week}
                 note={note}
-                onEdit={() => { setEditingWeek(note.week); setNewWeekKey(null); setPickingWeek(false); }}
+                onEdit={() => { setEditingWeek(note.week); setEditingNote(note); setNewWeekKey(null); setPickingWeek(false); }}
               />
             )
           )}
+          {total > notes.length && (
+            <button
+              onClick={() => setLimit((n) => n + MORE_WEEKS)}
+              disabled={loading}
+              className="w-full py-2.5 rounded-xl border border-gray-200 text-sm text-gray-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50/40 transition-colors disabled:opacity-50"
+            >
+              {loading ? "Loading…" : `Load ${Math.min(MORE_WEEKS, total - notes.length)} more`}
+            </button>
+          )}
         </div>
+      )}
+
+      {MEETING_PAIR.has(userId) && (
+        /* The note it writes is last week's, so it lands at the top of the page as it stands -
+           nothing needs resetting, just a refetch. */
+        <FathomImport onWritten={load} />
       )}
     </main>
   );

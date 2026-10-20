@@ -274,12 +274,17 @@ export function getPendingNudges<T extends NudgeCandidate>(goals: T[], dow: numb
     // statement of why, so the reason survives any change to how a graduated status is shaped.)
     if (g.graduatedAt) return false;
 
+    // Opted out of nudging. A habit's own `nudgeEnabled` is only ever set on daily habits, but a
+    // vacation week can switch any habit off for the week without excusing it, so the check sits
+    // above the per-frequency rules rather than inside the daily one.
+    if (g.nudgeEnabled === false) return false;
+
     // A habit doesn't enter the ladder until its configured reminder time has passed for the
     // day - that time is also its first text slot (see nudgeSlots).
     if (toMinutes(g.nudgeTime ?? DEFAULT_NUDGE_TIME) > nowMin) return false;
 
     if (g.frequency === "daily") {
-      return g.nudgeEnabled !== false && g.completedThisPeriod < g.targetCount;
+      return g.completedThisPeriod < g.targetCount;
     }
     if (g.nudgeDays && g.nudgeDays.includes(dow)) {
       return g.completedThisPeriod < g.targetCount && g.todayCount === 0;
