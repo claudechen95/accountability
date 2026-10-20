@@ -2,186 +2,142 @@
 
 Personal habit tracker. Next.js 14 app router, Upstash Redis (KV), deployed on Vercel. No auth — multi-user by URL path, fully isolated per user.
 
+## ⚠️ Keeping this file a reference, not a changelog
+
+Every session loads this file whole, so its length is a tax on every task. It is **documentation of the system as it stands now**. Git already holds the history; duplicating it here costs context on every future session and slowly makes the file untrustworthy, because a rule and the story of the rule it replaced read the same.
+
+**When you change the app, edit the sentence that is now wrong. Don't append.** If a paragraph describes behaviour that no longer exists, delete it — don't add "(as of October 2026 this now works differently)" underneath it.
+
+| Write this | Not this |
+|---|---|
+| The rule as it is now, in the present tense | "Until Aug 2026 it did X", "this reverses the original design" |
+| *Why* a rule exists, where the why stops someone undoing it | A narrative of the bug that led to it, with dates and who found it |
+| A constraint that still binds | A fix that is already in the code and can't regress |
+| "`mget` is not free per key, so blocks grow rather than being one fixed width" | "The first attempt used a flat 60 and was a wash, because…" |
+| An invariant a test pins | A list of every case that test asserts — read the test |
+
+A rule of thumb: if a sentence would still be true after the next refactor, it belongs here. If it only makes sense as an account of what happened, it belongs in the commit message. Dates, measured before/after numbers, incident write-ups and "we used to…" clauses are all signals you're writing a log.
+
+Two things worth preserving in full, since they are exactly the kind of thing that gets "cleaned up" and then reintroduced: the ⚠️ warnings, and the reason attached to each. Those are load-bearing.
+
 ## Stack
-- **Frontend:** `app/page.tsx` (landing page, lists users) + `app/[user]/page.tsx` (per-user tracker)
-- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings, vacation, users, nudge/dispatch, nudge/inbound, coach
+- **Frontend:** `app/page.tsx` (landing, lists users) + `app/[user]/page.tsx` (tracker)
+- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings, vacation, users, meeting-notes, nudge/dispatch, nudge/inbound, coach
 - **Data layer:** `lib/kv.ts` — all Redis reads/writes. Import from here, never call Redis directly elsewhere.
 - **Types:** `lib/types.ts` — `Goal`, `GoalStatus`, `NudgeCandidate`, `WeeklyNote`, `CheckInRecord`, `MoodEntry`
-- **Dates:** `lib/dates.ts` — pure `YYYY-MM-DD` arithmetic (`addDaysToDateStr`, `dayOfWeek`). It sits below `lib/kv.ts` and `lib/nudges.ts` because both need it and `kv` imports `nudges`.
-- **Timezone:** Everything PST/PDT (`America/Los_Angeles`). Date strings are `YYYY-MM-DD`.
+- **Dates:** `lib/dates.ts` — pure `YYYY-MM-DD` arithmetic. Sits below `lib/kv.ts` and `lib/nudges.ts` because both need it and `kv` imports `nudges`.
+- **Timezone:** everything PST/PDT (`America/Los_Angeles`); date strings are `YYYY-MM-DD`.
 
-**The tracker and history pages are server-rendered.** `app/[user]/page.tsx` and `app/[user]/history/page.tsx` (and the un-prefixed `/history`) are `async` server components that read Redis directly and pass the result to their client component as `initialGoals` / `initialHistory`.
-Those props are optional: without them the view fetches on mount as it always did, which is what a client-side navigation and every other view still do.
-`/api/goals`, `/api/vacation` and `/api/history` remain, and are what the client re-fetches after a check-in or at midnight - so any change to what those pages show has **two** call sites to keep in step. `getGoalHistories` in `lib/kv.ts` exists precisely so the history route and the history page can't drift.
-See [Latency instrumentation](#latency-instrumentation) for why.
+⚠️ **The tracker and history pages are server-rendered, so what they show has two call sites.** `app/[user]/page.tsx` and `app/[user]/history/page.tsx` (and the un-prefixed `/history`) are async server components that read Redis and pass `initialGoals` / `initialHistory` to their client component; those props are optional, and without them the view fetches on mount, which is what client-side navigation and every other view do. `/api/goals`, `/api/vacation` and `/api/history` are what the client re-fetches after a check-in or at midnight — change one and change the other. `getGoalHistories` exists so the history route and the history page can't drift.
 
 ## Multi-user architecture
 
 Users are identified by URL path (`/alan`, `/rochisha`). All API routes read `?user=` and pass it through the data layer.
 
-**`resolveUser(param)`** in `lib/kv.ts` normalizes the param: `"alan"` and `null`/`""` both map to `undefined` (backward compat — Alan's data has no prefix). Any other value is returned as-is.
+- **`resolveUser(param)`** normalizes it: `"alan"` and `null`/`""` both map to `undefined` (Alan's data has no prefix). Anything else passes through.
+- **`k(userId, key)`** namespaces: `userId ? ${userId}:${key} : key`.
 
-**`k(userId, key)`** namespaces Redis keys: `userId ? \`${userId}:${key}\` : key`. So Alan's `goals` key stays `goals`; Rochisha's becomes `rochisha:goals`.
+Everything is isolated: goals, checkins, history, reflections, mood, notes, journal, settings, nudge dedup flags.
 
-All data is fully isolated: goals, checkins, history, reflections, mood, weekly notes, journal, settings, notification dedup flags.
+**Adding a user:** `/admin` (no terminal, no deploy — topics are generated and stored in Redis), or `node scripts/add-user.mjs <id> "<Label>"`. The ntfy topic lives in the `UserRecord` (`checkinTopic`); the checkins route reads it from Redis, falling back to env vars for Alan/Claude/Rochisha.
 
-### Adding a new user
+**Hiding bottom-nav tabs:** `UserRecord.hiddenTabs` (a list of `TabDef.key`s), edited at `/admin`. `lib/tabs.ts` is the single list of hideable tabs, shared by `BottomNav` and the admin toggles; the icons stay in `BottomNav` because they're JSX. Home has no key and can't be hidden. The stored set is the *hidden* one, so an old record reads as "show everything"; `setUserHiddenTabs` stores an empty set as absent and drops non-tab keys.
+The list is read in **`app/layout.tsx`** (hence `async`): the nav is a client component in the layout, so this is the only place to fetch it without a client round trip, and fetching it client-side would flash a hidden tab on first paint. The cost is that `/`, `/mood`, `/notes`, `/history`, `/reflections` and `/coach` are dynamic rather than static shells, each paying one `get` of the small `users` key. If that ever needs reversing, the lever is caching the `users` read specifically, not un-hiding tabs.
 
-**Option A — Admin UI (no terminal needed):**
-Go to `/admin`, fill in user ID + display name, click Add. Topics are generated and stored in Redis automatically. The user appears on the landing page immediately. No deployment, no env vars.
+⚠️ **Hiding a tab is decluttering, not permission.** There's no auth: the route still renders for anyone with the URL, and nothing server-side checks `hiddenTabs`. Same goes for every other "hidden for other users" feature here.
 
-**Option B — Script (from terminal):**
-```bash
-node scripts/add-user.mjs <id> "<Label>"
-# Example:
-node scripts/add-user.mjs alice "Alice"
-```
-Writes directly to Redis. Prints the ntfy subscribe URLs. No deployment needed.
+**Habit-completion push** (so the partner sees a check-in): `NTFY_TOPIC` (Alan, legacy), `NTFY_CLAUDE_TOPIC`, `NTFY_ROCHISHA_TOPIC`, `NTFY_{USER_UPPER}_TOPIC` for anyone new. There is no in-app nudge modal — pending habits are surfaced entirely by the ladder below.
 
-The topic is stored inside the `UserRecord` in Redis (`checkinTopic`). The checkins route resolves it from Redis first, falling back to env vars for Alan/Claude/Rochisha whose topics were set before this system existed.
+## Escalating nudges (Sendblue + Twilio + QStash)
 
-### Hiding bottom-nav tabs
-
-`UserRecord.hiddenTabs` (a list of `TabDef.key`s) switches tabs off per user, edited at `/admin` and stored in the same `users` key as the phone numbers.
-`lib/tabs.ts` is the single list of hideable tabs, shared by `BottomNav` and the admin toggles so a tab can't exist in one and not the other; the icons stay in `BottomNav` because they're JSX.
-**Home has no key and can't be hidden** - it's the tracker, which is the app.
-The stored set is the *hidden* one, so a record written before this existed reads as "show everything"; `setUserHiddenTabs` stores an empty set as absent to keep that a single shape, and drops keys that aren't tabs.
-Alan currently hides Reflect and Coach.
-
-**Hiding a tab is decluttering, not permission.** There's no auth here - the route still renders for anyone who types the URL or follows a bookmark, and nothing server-side checks `hiddenTabs`.
-
-The list is read in **`app/layout.tsx`**, which is why that layout is now `async`. The nav is a client component and sits in the layout rather than in any page, so this is the only place the config can be fetched without a client round trip - and fetching it client-side would mean a hidden tab appearing on first paint and vanishing after hydration.
-The cost is that `/`, `/mood`, `/notes`, `/history`, `/reflections` and `/coach` are now `ƒ` dynamic rather than `○` static shells, each paying one `get` of the small `users` key (~9ms from `sfo1`).
-That's close to a wash rather than a regression: those pages all fetch their data on mount anyway, so the function was being woken either way - this moves the cold start ahead of the HTML instead of adding a second one. If it ever needs to come back, the lever is caching the `users` read specifically (it changes ~never, unlike habit state - see [Cold vs warm](#cold-vs-warm-and-why-theres-no-data-cache)), not un-hiding the tabs.
-
-### Notification env vars per user
-
-There is no in-app nudge modal anymore — pending goals are surfaced entirely via the escalating text/call ladder (below) for users with a phone number configured. The habit-completion push notification still fires when a user checks off a goal, so their accountability partner sees it:
-
-| User | Completed habit |
-|------|----------------|
-| Alan | `NTFY_TOPIC` (legacy) |
-| Claude | `NTFY_CLAUDE_TOPIC` |
-| Rochisha | `NTFY_ROCHISHA_TOPIC` |
-| Future | `NTFY_{USER_UPPER}_TOPIC` |
-
-### Escalating nudges (Sendblue + Twilio + QStash)
-
-Any user with a `phone` set (via `/admin`, or `PATCH /api/users`) climbs a five-step ladder each day, per habit, until they complete the check-in.
-`lib/nudges.ts` owns the whole schedule and is pure - the clock, weekday, and habit list are passed in - so nothing else computes when a step is due.
-
-`normalizePhone` in `lib/kv.ts` canonicalizes both numbers to E.164 on write, and `findUserByPhone` normalizes both sides of the comparison so numbers stored before it existed still match.
-This is load-bearing for inbound replies only: Sendblue and Twilio both parse loose forms like `+1 929 213 7480` on *send*, but Sendblue reports an inbound sender in strict E.164, so a formatted stored number silently matched no user and dropped every reply.
-
-**Everything in steps 1-4 is scheduled per habit, off that habit's own `nudgeTime`.** The user-level ladder is only step 5.
+Any user with a `phone` set climbs a five-step ladder each day, **per habit**, until they check in. `lib/nudges.ts` owns the whole schedule and is pure — clock, weekday and habit list are passed in, so nothing else computes when a step is due.
 
 | Step | When | What |
 |------|------|------|
-| 1-3 | `nudgeTime`, then evenly spread toward `DAY_END` — but never closer than `MIN_SLOT_GAP_MIN` (20 min) | Text via Sendblue |
-| 4 | `habitCallStart` — `ESCALATION_DELAY_MIN` (10 min) after *that habit's* last text — then retried every `CALL_RETRY_MIN` (10 min) up to `MAX_CALL_ATTEMPTS` (3) | Phone call via Twilio |
-| 5 | `PARTNER_ALERT_DELAY_MIN` (30 min) after that nudge day's last call attempt, once no habit has an attempt left | Text to the user's `partnerPhone` |
+| 1-3 | `nudgeTime`, then evenly spread toward `DAY_END`, never closer than `MIN_SLOT_GAP_MIN` (20 min) | Text via Sendblue |
+| 4 | `habitCallStart` — `ESCALATION_DELAY_MIN` (10 min) after *that habit's* last text — retried every `CALL_RETRY_MIN` (10 min), `MAX_CALL_ATTEMPTS` (3) | Call via Twilio |
+| 5 | `PARTNER_ALERT_DELAY_MIN` (30 min) after the day's last call attempt, once no habit has an attempt left | Text to `partnerPhone` |
 
-A 21:00 habit texts at 21:00/21:20/21:40 and calls at 21:50/22:00/22:10; a 13:25 habit texts at 13:25/16:17/19:08 and calls at 19:18/19:28/19:38, on the same evening, without either waiting for the other.
-**This means a bad night can be a lot of phone calls** — four habits on four different clocks is up to twelve. Answering any one of them ends *those* habits' ladders. A text reply can only snooze the habits it names, until the time it names, so twelve calls is still the ignore-everything worst case rather than the normal one.
+Steps 1–4 are per habit; only step 5 is user-level. `nudgeSlots(nudgeTime)` divides `nudgeTime → DAY_END` into thirds, so every habit gets exactly three texts before the call: 9am lands 9:00/13:20/17:40, 9pm lands 21:00/21:20/21:40. `nudgeTime` defaults to `"21:00"`.
 
-Two consequences of per-habit calls worth keeping in mind:
-- **Texts and calls don't exclude each other.** The dispatch route used to short-circuit into a single call phase once the clock passed a user-level cutoff, which meant a habit whose `nudgeTime` was past that cutoff (Piano Session at 22:30, Emotional Check-in at 22:00) got neither a text nor a call and went silent all day. There is no cutoff now: a habit can be sending its first text on the same tick another is being called about. Pinned by two regression tests in `nudge-ladder`.
-- **Habits due on the same tick share one call.** Dialling the same number twice in one tick would put the second on a busy signal, so `dueCalls` is claimed per habit but placed as a single call naming all of them.
+`getPendingNudges` is the single source of truth for "is this habit pending", and gates a habit out until its own `nudgeTime` has passed. Vacation-paused and graduated habits are excluded. `getNudgeCandidates(date, userId)` is a deliberately narrow alternative to `getGoalStatuses` — the ladder needs two counts per habit, not a streak walk and a reflection prompt.
 
-The times come from the *habit*, not from the cron tick: `nudgeSlots(nudgeTime)` divides the span from `nudgeTime` to `DAY_END` into thirds, so a habit always gets exactly three texts before the call.
-Set to 9am they land 4h20m apart (9:00, 13:20, 17:40); set to 9pm they land 20 minutes apart (21:00, 21:20, 21:40).
-`nudgeTime` defaults to `"21:00"`.
-`getPendingNudges` is the single source of truth for "is this goal pending", and gates a habit out of the ladder entirely until its `nudgeTime` has passed.
-Vacation-paused goals (`getActiveVacation`) and graduated goals are excluded.
+Two consequences of per-habit scheduling:
+- **Texts and calls don't exclude each other.** There is no user-level cutoff into a "call phase"; a habit can be sending its first text on the tick another is being called about. (Pinned by regression tests — a cutoff silently starved any habit nudging after it.)
+- **Habits due on the same tick share one call.** `dueCalls` is claimed per habit but placed as a single call naming all of them, since dialling twice in one tick gets a busy signal.
+- **A bad night is a lot of calls** — four habits on four clocks is up to twelve. Answering any one ends *those* habits' ladders.
 
-#### Late habits, and the nudge day
+### Late habits and the nudge day
 
-**`nudgeTime` is uncapped, and a ladder is anchored to the nudge day it started on rather than to the calendar.**
-A habit set past 21:00 has no span left to divide toward `DAY_END`, so `nudgeSlots` falls back to `MIN_SLOT_GAP_MIN` spacing and runs on past midnight instead: 22:30 texts at 22:30/22:50/23:10, calls at 23:20/23:30/23:40 and alerts the partner at 00:10; 23:30 texts at 23:30/23:50/00:10 and finishes at 01:10.
-The floor is set to exactly a 21:00 habit's spacing, which is what makes this a pure addition — **every habit at or before 21:00 keeps the schedule it already had**, and there's no discontinuity at the boundary. Before this, a habit at 21:50 crushed three texts into seven minutes and one at 22:00 collapsed to a single reminder.
+**`nudgeTime` is uncapped, and a ladder belongs to the nudge day it started on, not the calendar.** Past 21:00 there's no span left to divide, so `nudgeSlots` falls back to `MIN_SLOT_GAP_MIN` spacing and runs past midnight: 22:30 texts 22:30/22:50/23:10, calls 23:20/23:30/23:40, alerts the partner at 00:10; 23:30 finishes at 01:10. The floor equals a 21:00 habit's spacing, so nothing at or before 21:00 is affected.
 
-Three things make the overhang work, and all three are load-bearing:
-- **`lib/nudges.ts` counts in minutes from the nudge day's midnight, and lets the count exceed 1440.** As `"HH:MM"` strings a time past midnight wrapped to a small number and therefore sorted *before* every other time in its own ladder, so `now >= deadline` silently never fired. `CallAttempt.at` and `nudge:escalated:{date}` store minutes for the same reason. `formatHHMM` exists for logs and nothing else.
-- **`nudgeAnchors(nowMin, today)` returns today, plus yesterday while `nowMin < CARRYOVER_WINDOW_MIN` (3h).** The tick is simply asked twice, the second pass measuring from yesterday's midnight so 00:20 reads as 1460 — rather than teaching every individual step about dates. `crossesMidnight(nudgeTime)` filters the carryover pass down to habits whose ladder actually overhangs; without it every habit missed yesterday would be reconsidered at 00:00 with all its slots already past, and would immediately owe a *second* partner alert. Shared by the dispatch tick and the inbound handler, which have to agree on what "currently nudging" means.
-- **Nudge claims outlive midnight** (`nudgeClaimTtl` = midnight + `CARRYOVER_WINDOW_MIN`). Expiring at midnight would drop a running ladder's "already sent" record mid-flight and the next tick would restart it from slot 0.
+Three load-bearing pieces:
+- **`lib/nudges.ts` counts minutes from the nudge day's midnight and lets the count exceed 1440.** As `"HH:MM"` strings a post-midnight time sorts *before* everything else in its own ladder and `now >= deadline` silently never fires. `CallAttempt.at` and `nudge:escalated:{date}` store minutes for the same reason; `formatHHMM` is for logs only.
+- **`nudgeAnchors(nowMin, today)`** returns today, plus yesterday while `nowMin < CARRYOVER_WINDOW_MIN` (3h) — the tick is asked twice rather than every step learning about dates. `crossesMidnight(nudgeTime)` narrows the carryover pass to habits whose ladder actually overhangs; without it every habit missed yesterday reopens at 00:00 with all slots past and immediately owes a *second* partner alert. Shared by the dispatch tick and the inbound handler, which must agree on "currently nudging".
+- **Nudge claims outlive midnight** (`nudgeClaimTtl` = midnight + `CARRYOVER_WINDOW_MIN`), or a running ladder loses its own "already sent" record mid-flight and restarts from slot 0.
 
-`getNudgeCandidates(date, userId)` is what makes the carryover pass *correct* rather than merely possible: it scores habits against the nudge day, so a habit checked in at 23:55 isn't called about at 00:20 just because the new calendar day is empty. It's also deliberately much narrower than `getGoalStatuses` — the ladder needs two counts per habit, where a full status also walks the streak and builds a reflection prompt, all of which a cron tick throws away.
+### Replying: snooze until a time, or pause for the day
 
-⚠️ **The cron window must cover every hour a ladder can run in.** It was 8am–11pm, which silently dropped every step a late habit had after 23:00 — see the dispatch bullet below.
-
-#### Replying: snooze until a time, or pause for the day
-
-**There are exactly two commands, and a clock time is what tells them apart** - which is the difference itself: a time means "later today", no time means "not today".
-`lib/snooze.ts` owns the whole grammar; `parseNudgeReply` returns one or the other, or `null` for anything else ("ok", a bare number, a time with no numbers), which leaves the ladder running and gets the instructions back.
-`pause 1 until 4pm` is read as a snooze rather than rejected for naming both.
+**Two commands, told apart by whether there's a clock time** — a time means "later today", no time means "not today". `lib/snooze.ts` owns the grammar; `parseNudgeReply` returns one, the other, or `null` for anything else ("ok", a bare number, a time with no numbers), which leaves the ladder running and resends the instructions. `pause 1 until 4pm` reads as a snooze.
 
 | Reply | Means |
 |---|---|
-| `1 2 until 15:30` | Delay those habits to that time. The ladder resumes afterwards, partner alert included. |
-| `pause 1`, or a bare `pause` | Those habits are finished for the day. Same full exit as answering the phone. |
+| `1 2 until 15:30` | Delay those habits to that time. Ladder resumes afterwards, partner alert included. |
+| `pause 1`, or bare `pause` | Those habits are done for the day — the same full exit as answering the phone. |
 
-**A pause is a deliberate skip, and the one reply that buys silence.** It writes the same `nudge:muted:{goalId}:{date}` that answering the phone does, so the habit gets no further texts, no call, and **no partner alert**.
-It exists because a snooze needs a time the user intends to actually do the thing, and "I'm not doing it today, on purpose" has no such time - without it a rest day was indistinguishable from ignoring the app, and the only reply that fit was a time the user knew was a lie.
-A bare `pause` (also `skip`, and padding like `pause it today` / `pause all`) means every habit nudging at that moment; with numbers it means only those.
-Nothing else is in reach: the scope is what keeps a quiet exit honest, since a pause can never silence a question that hasn't been asked yet.
+**A pause writes the same `nudge:muted:{goalId}:{date}` that answering the phone does**: no further texts, no call, **no partner alert**. It exists because a snooze needs a time the user intends to act on, and "not today, on purpose" has none — without it a rest day is indistinguishable from ignoring the app. Bare `pause` (also `skip`, and padding like `pause all`) means every habit nudging at that moment; with numbers, only those. **This is a text-reachable exit from the partner alert** — a deliberate trade, Alan's call.
 
-⚠️ **This is a text-reachable exit from the partner alert, which for a year the design deliberately refused to have.** It's a considered trade (Oct 2026, Alan's call): the alternative - partner still told, at the time the ladder would have reached them - was rejected in favour of the simpler full exit. The confirmation naming every habit it reached is the only record the user gets, which is why it names all of them rather than just a count.
+**A snooze holds the named habits until a clock time**, stored as `nudge:snoozed-until:{goalId}:{date}` in minutes from the nudge day's midnight. One reply can give several habits different times (`1 until 15:30 and 2 until 4pm`); `3:30` with no am/pm means whichever reading comes next; a later reply overwrites. During the hold: no texts, no calls, partner alert waits. Text slots passing during the hold are claimed without sending so they don't all fire at once; calls wait rather than being spent.
 
-**A snooze holds the habits it names until a clock time.** The outbound text tells the user both shapes: `Snooze with the numbers and a time, e.g. "1 2 until 15:30", or "pause 1" to skip it today.` One reply can name several habits, and can give them different times (`1 until 15:30 and 2 until 4pm`). `3:30` with no am/pm means whichever reading comes next. The hold is `nudge:snoozed-until:{goalId}:{date}`, stored as minutes from the nudge day's midnight, so a time after midnight stays later than the evening that started the ladder. A later reply for the same habit overwrites it.
+**A hold is clamped to `maxSnoozeUntil(nudgeTime)`, because a snooze no tick can clear is a silent mute.** `snoozeHold` is the only writer and pulls a request back to the cap rather than refusing it. The cap is the nudge day's horizon less `LADDER_TAIL_MIN` (50 min) and one `CALL_RETRY_MIN` of slack (calls land on the tick at or after the hold expires, not on the minute). That horizon is midnight for a habit whose ladder doesn't overhang (23:00 for anything at or before 22:19) and midnight + `CARRYOVER_WINDOW_MIN` for one that does (02:00) — exactly the window `nudgeAnchors` ticks. It's always later than the habit's own `nudgeTime`, so clamping can never make a habit unsnoozeable. A reply arriving after the cap writes no hold and says so rather than confirming a time in the past.
 
-While the hold is in effect the habit gets no texts and no calls, and it keeps the partner alert waiting. Text slots that pass during the hold are claimed without sending, so they don't all fire the minute the hold ends. Calls wait instead of being spent, and the first one goes out once the time has passed. After that the rest of the ladder runs as usual, partner alert included, unless the habit is checked in or the call is answered.
+**Only habits nudging right now can be snoozed or paused.** A number whose nudge time hasn't come is left alone, and so is everything a bare `pause` doesn't reach — a reply can only be about a question already asked.
 
-**A hold is clamped to `maxSnoozeUntil(nudgeTime)`, because a snooze no tick can clear is a mute - and a silent one.**
-`snoozeHold` in `lib/snooze.ts` is the only writer of the hold, and it pulls a request back to that cap rather than refusing it: the user asked for as late as possible, so they get as late as possible.
-The cap is the nudge day's horizon less the ladder's remaining tail (`LADDER_TAIL_MIN`, 50 min) and one `CALL_RETRY_MIN` of slack, since calls only go out on cron ticks and the first one lands on the tick at or after the hold expires rather than on the minute itself.
-That horizon is **midnight for a habit whose ladder doesn't overhang it** (23:00 for anything nudging at or before 22:19) and **midnight + `CARRYOVER_WINDOW_MIN` for one that does** (02:00 for a 22:30 or 23:30 habit) - exactly the window `nudgeAnchors` still ticks the day in.
-It is always later than the habit's own `nudgeTime`, so clamping can never leave a habit unsnoozeable; a 22:19 habit has the least room, 41 minutes.
+Confirmations: a snooze names each habit and **the time actually written**, so a clamped hold adds `That's as late as tonight's nudges run.` (otherwise 01:00 → 23:00 reads as the app mishearing). A pause names every habit it reached (`⏸️ Paused for today: 🥗 Salad. It's back tomorrow.`), since that's the only place a user learns it took something they didn't mean. Both share `replyTail` for the unmatched-numbers and "anything you left out" sentences.
 
-Without it, `1 until 1am` on a 18:00 habit wrote minute 1500 under a day whose ladder stops being looked at at midnight: no tick ever reached 1500, so the remaining texts, all three calls and the partner alert never happened and nothing recorded that they'd been cancelled.
-That was the one reply that still muted a day, undocumented, and reachable by asking for a plausible time.
-`nudge-ladder` pins both directions end to end, driving the real webhook and then the real ticks: the 18:00 habit's hold comes back to 23:00 and its partner alert lands at 23:50, while a 23:30 habit's `1 until 1am` stands as asked because 01:00 is inside the window its ladder already runs in.
-A reply so late that the cap has already passed (23:10, to a habit whose ladder is long finished) writes no hold at all and says so, rather than confirming a time in the past.
+### Pieces
 
-**Only habits that are nudging right now can be snoozed or paused.** A number whose nudge time hasn't come is left alone, and so is everything a bare `pause` doesn't reach. On Sat 19 Sep 2026 a ⛰️ Nature nudge went out at 11:00, "Pause" came back at 11:56, and 📝 Video Journal, which nudges at 21:00 and had therefore not said a word yet, went silent for the rest of the day. A reply can only be about a question already asked - which is what makes it safe to offer "pause" again without reopening that bug.
+- **`app/api/nudge/dispatch/route.ts`** — the tick. Requires `x-nudge-secret` matching `NUDGE_DISPATCH_SECRET`; there is no unauthenticated path. Scheduled by an **Upstash QStash schedule** (Vercel Hobby cron can't run more than once/day): `scd_6rvyNmFdwb26ghYXDmXWTpxUzcJc`, cron `*/10 * * * *`, round the clock, POSTing to `https://accountability-azure.vercel.app/api/nudge/dispatch` with the secret as an `Upstash-Forward-x-nudge-secret` header. Manage via the QStash token from `upstash qstash list` against `https://qstash.upstash.io/v2/schedules`; delivery history at `/v2/events`.
+  ⚠️ **The schedule must cover every hour a ladder can run in**, and tick at least as often as `MIN_SLOT_GAP_MIN` (20 min). If it's ever narrowed, cap `nudgeTime` in the habit form to match — otherwise late habits go quiet with no error anywhere. Keep the scheduler somewhere whose credentials this repo's operators actually hold.
+  `runLadder` runs all five steps for one user against one `NudgeAnchor`, called once per anchor — an overnight ladder is the same ladder asked about a day that started yesterday, not a special case.
+- **`lib/call.ts`** — `placeCall` is the only thing that talks to a voice provider (the seam `lib/sendblue.ts` gives texts). Inline TwiML (one-way call, so no public webhook to authenticate), `Polly.Matthew`, `loop="2"`, habit names spoken without emoji. `callScript` in `lib/nudges.ts` builds the text. `isCallConfigured()` gates on the Twilio env vars, so an unconfigured deployment just stops after step 3.
+  ⚠️ **Twilio reports voicemail as `completed`, exactly like a human answering** — which would stop the retry loop on the one case it exists for. Two things separate them: `Timeout: 20` (shorter than the ~25-30s before carriers divert, so an unanswered call rings out to an honest `no-answer`) and `MachineDetection: "Enable"` (populates `answered_by`). `getCallOutcome(sid)` collapses status + `answered_by` into `reached`/`missed`/`pending`, polled on the *following* tick rather than pushed to a callback. `unknown` and absent `answered_by` both count as `reached` — failed detection isn't evidence of a machine. A `pending` outcome must not consume an attempt.
+- **`app/api/nudge/inbound/route.ts`** — Sendblue's webhook target, registered via `POST https://api.sendblue.com/api/account/webhooks` with a chosen secret, which must be echoed back (checked against `sb-webhook-secret`/`sb-signing-secret` headers or a `secret` body field — their docs don't pin down which, so all are checked; unverified requests 401). Sendblue has no reply-to/thread field, so the clock is the only way to know which habits a reply is about. It walks the same `nudgeAnchors` as the tick, because just after midnight the text being replied to may belong to yesterday's ladder and the hold or mute must be written under *that* day's key. A well-formed command with nothing pending is told so outright rather than handed the generic hint.
+- **`Goal.nudgeNumber`** — stable 1..N per user, shown in texts ("2. 🏋️ Gym") so a reply like "2" always means the same habit. `renumberGoals()` reassigns compactly on add/delete (from `app/api/goals/route.ts`); `getGoals()` backfills it. It tracks storage order, not drag-reordered display position, and is deliberately **not** renumbered on graduation so a number survives a round trip to the shelf.
+- **Every step claims its slot before sending** (`SET NX EX`, all expiring at `nudgeClaimTtl`), so overlapping or retried dispatches can never double-send: `claimNudgeSlot` → `nudge:sent:{goalId}:{date}:{slot}`, `claimEscalation` → `nudge:escalated:{date}`, `claimCallAttempt` → `nudge:call:{goalId}:{date}:{attempt}` (holds `{at, sid}`, sid written back once Twilio accepts so the next tick can poll it; merged calls share a sid), `claimPartnerAlert` → `nudge:partner-alerted:{date}`. `date` is the **nudge day** — after midnight, yesterday.
+- **`dueSlotIndices` returns every passed slot**, so an outage burns the slots it slept through rather than replaying them one per tick and crowding the call they precede. **`nextCallTime` does the opposite**, scheduling each retry off when the previous call actually went out — a missed call is a chance to reach someone that's still worth taking a tick late. The asymmetry is intentional.
+- `lib/sendblue.ts`'s `sendText` is the only caller of the Sendblue send API.
 
-**Answering the phone still mutes** the habits that call named (`nudge:muted:{goalId}:{date}`), and a merged call settles all of them. A mute is a full exit: no further texts, no calls, and no place in the partner alert. A snooze is a delay. A pause is the same mute, reached by text instead of by picking up.
+⚠️ **Never put a carrier opt-out keyword in an outbound message.** `STOP`, `STOPALL`, `UNSUBSCRIBE`, `CANCEL`, `END`, `QUIT` are intercepted by the carrier *ahead of* Sendblue on SMS and permanently block every future message from that sender — transactional included — while the inbound webhook never fires. The failure is silent and backwards: no mute is recorded, so the ladder keeps calling and alerting the partner about texts that can't be delivered, and undoing it needs the user to text `START` to their carrier. Sendblue additionally auto-detects `stop, unsubscribe, cancel, opt out, revoke, end, quit` (and `start`), so this bites on iMessage too, and there is **no API to query opt-out state**. The outbound line is `Snooze with the numbers and a time, e.g. "1 2 until 15:30", or "pause 1" to skip it today.` — it names the shapes of a reply rather than inviting a free-form one, because a free-form invitation is an invitation to improvise "stop". **Offering "pause" is part of that defence**: a user who means to skip today needs a word for it, and left to improvise reaches for exactly the reserved keywords. A test in `nudge-ladder` word-boundary-matches every outbound message against the reserved list.
 
-Consequences worth knowing:
-- **The confirmation names each habit and the time**, and says that anything left out will keep nudging (`✅ Snoozed until 20:30: 🥗 Salad, 🏋️ Gym.`). It names the time that was actually written, so a clamped hold adds `That's as late as tonight's nudges run.` - the reply said 01:00 and the confirmation says 23:00, and unexplained that reads as the app having misheard.
-- **A pause's confirmation names every habit it reached and how long for** (`⏸️ Paused for today: 🥗 Salad. It's back tomorrow.`), since this is the only place a user would learn it took something they didn't mean. Both confirmations share `replyTail` for the unmatched-numbers and "anything you left out" sentences, so the two commands answer the same two questions in one voice.
-- **A pause is the only way to de-escalate the partner alert by text.** A snooze always delays it; the other full exits are checking the habit in and answering the phone.
-- **The outbound line is the example above.** It names both shapes and does not invite a free-form reply - offering "pause" is part of that, not a hole in it (see the opt-out warning below).
-- **`Goal.nudgeNumber` is how a reply picks habits.** The outbound text lists them by that number.
+Env vars: `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET`, `NUDGE_DISPATCH_SECRET`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`.
 
-- **`app/api/nudge/dispatch/route.ts`** — the tick. Requires header `x-nudge-secret` matching `NUDGE_DISPATCH_SECRET` (rejects with 401 otherwise — there is no unauthenticated path). Scheduled externally by an **Upstash QStash schedule** (Vercel's Hobby-plan Cron can't run more than once/day, so it can't be used here): schedule `scd_6rvyNmFdwb26ghYXDmXWTpxUzcJc`, cron `*/10 * * * *` (every 10 minutes, round the clock — QStash cron is UTC, which for a uniform interval needs no timezone at all), POSTing to `https://accountability-azure.vercel.app/api/nudge/dispatch` with the secret via an `Upstash-Forward-x-nudge-secret` header. Manage it with the QStash token from `upstash qstash list` (the CLI is logged in as the Upstash account this project's Redis lives in) against `https://qstash.upstash.io/v2/schedules`; delivery history is at `/v2/events`, so a tick that didn't fire is *observable* for the first time. The tick rate carries no meaning; it only has to be at least as frequent as the tightest slot spacing (`MIN_SLOT_GAP_MIN`, 20 min). **The schedule's extent still matters — it must cover every hour a ladder can run in.** If it is ever narrowed, cap `nudgeTime` in the habit form to match, or late habits go quiet without a single error anywhere.
-  ⚠️ History, and why the scheduler moved (Sep 2026): the tick used to be a cron-job.org job described in these docs as "every 10 minutes, 8am–11pm" and later "round-the-clock" — but the real job, verified against Sendblue's outbound history (every send ever was exactly on an hour, none after 21:00), ran **hourly, 8am–9pm PT**, unchanged since the first version of this feature. Every doc revision since had updated the description without anyone being able to update the job: the cron-job.org account credentials existed on no machine we control, which also meant the mismatch was undiscoverable from the repo. Practical upshots: (1) any habit nudging at 21:00 got exactly one text and no escalation, ever — the ladder's later steps all fell between hourly ticks or past the window; earlier habits escaped because their slots (16:00/18:00/20:00) happened to land on whole hours; (2) the orphaned cron-job.org job may still be firing hourly at the same endpoint — harmless, since every step claims its slot with `SET NX` before sending, but if the account ever resurfaces, delete the job. The scheduler must stay somewhere with credentials this repo's operators actually hold.
-  `runLadder` runs the whole five steps for one user against one `NudgeAnchor`, and is called once per anchor — an overnight ladder isn't a special case with its own rules, it's the same ladder asked about a day that started yesterday.
-- **`lib/call.ts`** — `placeCall` is the only place that talks to a voice provider, the same seam `lib/sendblue.ts` gives texts. Inline TwiML (no hosted callback URL, since the call is one-way, so there's no public webhook to authenticate), `Polly.Matthew`, `loop="2"` because a single pass is easy to miss on pickup, and habit names spoken without emoji, which read badly in TTS. `callScript` in `lib/nudges.ts` builds the spoken text. `isCallConfigured()` gates on the Twilio env vars being present, so an unconfigured deployment just stops the ladder after step 3 instead of erroring every tick.
-  **Twilio reports a voicemail pickup as `completed`, exactly like a human answering** — declining a call in a meeting therefore looks identical to taking it, which would make the retry loop stop on the one case it exists for. Two things separate them, neither needing a public webhook: `Timeout: 20` (shorter than the ~25-30s most carriers wait before diverting, so an unanswered call rings out to an honest `no-answer`) and `MachineDetection: "Enable"` (populates `answered_by` for whatever answers fast enough to beat the timeout). `getCallOutcome(sid)` collapses status + `answered_by` into `reached` / `missed` / `pending`, polled on the *following* cron tick rather than pushed to a callback. `unknown` and an absent `answered_by` both count as `reached`: failed detection isn't evidence of a machine, and ringing someone three times because Twilio couldn't classify them is the worse error. AMD also removes the need for a leading `<Pause>`, since detection already withholds the TwiML until the callee is classified.
-- **`app/api/nudge/inbound/route.ts`** — Sendblue's inbound-webhook target, registered via `POST https://api.sendblue.com/api/account/webhooks` with a chosen `secret`. Requires that secret to be echoed back (checked against `sb-webhook-secret`/`sb-signing-secret` headers or a `secret` body field — Sendblue's docs don't pin down the exact one, so all are checked; unverified requests always 401). **A reply either snoozes or pauses the numbered habits that are pending when it arrives** (see above). Anything that isn't one of those two shapes changes nothing. Sendblue has no reply-to/thread field, so there's no way to know which outbound message a reply is "about". The clock is the best available answer, since `getPendingNudges` already gates a habit out until its own nudge time has passed. It walks the same `nudgeAnchors` the dispatch tick does, because just after midnight the text being replied to may belong to a ladder that started yesterday evening, and the hold or the mute has to be written under *that* day's key or the ladder carries on calling. A well-formed command arriving with nothing pending is told so outright rather than handed the bare hint, which reads as "you got the words wrong" when the words were fine.
-- **`Goal.nudgeNumber`** (`lib/types.ts`) — a stable 1..N id per user, shown in nudge texts ("2. 🏋️ Gym") so a reply like "2" always means the same habit. `renumberGoals()` in `lib/kv.ts` reassigns it compactly whenever a goal is added or deleted (called from `app/api/goals/route.ts`'s `POST`/`DELETE`), and `getGoals()` backfills it for any pre-existing goal missing it. It tracks each goal's storage/creation order, not its drag-reordered display position — a habit's nudge number and its position in the home-screen list can differ.
-- Every step claims its slot (`SET NX EX`, all expiring at `nudgeClaimTtl` — PST midnight *plus* `CARRYOVER_WINDOW_MIN`, so a running ladder can't lose its own record at midnight) *before* sending, so overlapping or retried dispatch calls can never double-send: `claimNudgeSlot(userId, goalId, date, slotIndex)` → `nudge:sent:{goalId}:{date}:{slot}` (per goal, so each habit escalates on its own schedule), `claimEscalation` → `nudge:escalated:{date}`, `claimCallAttempt(userId, goalId, date, attempt)` → `nudge:call:{goalId}:{date}:{attempt}` (per goal like the text slots, holding `{at, sid}`, the sid written back once Twilio accepts so the next tick can poll it — habits sharing a merged call share its sid), `claimPartnerAlert` → `nudge:partner-alerted:{date}`. In all of these `date` is the **nudge day**, which after midnight is yesterday's date.
-- `dueSlotIndices` returns *every* passed slot, not just the latest, so a dispatch outage burns the slots it slept through rather than replaying them one per later tick, which would push a habit's third text past the call it's meant to precede.
-- `nextCallTime` deliberately does the **opposite**, scheduling each retry off when the previous call actually went out rather than off a fixed timetable — so an outage delays the call ladder instead of burning the attempts it slept through. The asymmetry is intentional: a text slot missed is a reminder lost, and replaying it late would crowd the call it's meant to precede, whereas a call attempt missed is a chance to reach someone that's still worth taking a tick late. It also means the backoff can't compress two attempts into one tick after a gap.
-- `lib/sendblue.ts`'s `sendText` is the only place that calls the Sendblue send API.
-- ⚠️ **Never put a carrier opt-out keyword in an outbound message.** `STOP`, `STOPALL`, `UNSUBSCRIBE`, `CANCEL`, `END` and `QUIT` are intercepted by the carrier *ahead of* Sendblue on SMS: they block every future message from that sender permanently — transactional included, not just for the day — and the inbound webhook never fires. The failure is silent and backwards: no mute is ever recorded, so the ladder carries on calling and alerting the partner about texts that can no longer be delivered, and undoing it needs the user to text `START` to their carrier, not any change here. The nudge text used to end with `or "stop" to snooze all`, which was exactly that trap. Sendblue additionally auto-detects `stop, unsubscribe, cancel, opt out, revoke, end, quit` (and `start` to reactivate) on its own, so this bites on iMessage too rather than only on SMS fallback, and there is **no API to query whether a number is opted out**. The text reads `Snooze with the numbers and a time, e.g. "1 2 until 15:30", or "pause 1" to skip it today.` It names the shapes of a reply rather than inviting a free-form one, since a free-form invitation is an invitation to improvise "stop" or "cancel". **Offering "pause" is part of that defence rather than a hole in it:** a user who means to skip today needs a word for it, and left to improvise one they reach for exactly the reserved keywords. `pause` and `skip` are on neither the carrier list nor Sendblue's. A test in `nudge-ladder` word-boundary-matches every outbound message against the reserved list (word boundaries because "pending" contains "end").
-
-Env vars: `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (chosen by us, used both when registering the webhook and to verify inbound requests), `NUDGE_DISPATCH_SECRET` (chosen by us, forwarded by the QStash schedule as a custom header), `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`.
+**Phone numbers:** `normalizePhone` canonicalizes to E.164 on write and `findUserByPhone` normalizes both sides. Load-bearing for inbound only — Sendblue and Twilio parse loose forms on *send*, but report an inbound sender in strict E.164, so a formatted stored number matches no user and silently drops every reply.
 
 ## Data model
-Goals are stored as a JSON array at Redis key `goals` (Alan) or `{userId}:goals` (others).
 
-Check-ins are stored per-day: `checkin:{goalId}:{YYYY-MM-DD}` → count. Weekly goals are tracked daily and aggregated — there are NO week-keyed checkin records anymore.
+| Key | Shape |
+|---|---|
+| `goals` | JSON array of `Goal` |
+| `checkin:{goalId}:{YYYY-MM-DD}` | count. Weekly habits are tracked daily and aggregated — there are no week-keyed checkin records. |
+| `reflection:{goalId}:{YYYY-MM-DD}` | `{ text, savedAt }`, always date-keyed |
+| `mood:{YYYY-MM-DD}` | list of `MoodEntry` JSON. Also increments `checkin:emotional-checkin:{date}`. |
+| `target-history:{goalId}` | list of `TargetChange` JSON, `rpush`ed chronologically |
+| `note:{YYYY-Www}` | `WeeklyNote` |
+| `settings:vacation` | list of `VacationWindow` |
+| `coach:chat` | list of `CoachMessage` |
 
-Reflections: `reflection:{goalId}:{YYYY-MM-DD}` → `{ text, savedAt }`. Always date-keyed (not week-keyed), for both daily and weekly goals.
-One reflection can be filed under several dates: `reflectionDateKeys` writes a **daily** goal's text to every missed day the prompt just named (falling back to yesterday if nothing is outstanding), so none of them is raised again - `getUnreflectedMissedDays` drops any day that already carries a reflection, so a text filed against the run's last day alone would have the rest come back tomorrow. A **weekly** goal's is about the one day its prompt named, so it goes under *that* day, falling back to the day it was written when the prompt had no day to name.
-**The key is the day a reflection is *about*; the history grid shows it on the day it was *written*.** Those differ by a day or more for most of Alan's 60 stored reflections (written the morning after the miss), so `getReflectionsByWrittenDay` re-keys by `savedAt` for the history payload - see [Reflections in the grid](#key-behaviors).
+All prefixed with `{userId}:` for everyone but Alan.
 
-Mood entries: `mood:{YYYY-MM-DD}` → list of `MoodEntry` JSON strings. Also increments `checkin:emotional-checkin:{date}`.
+**Reflections are keyed by the day they're *about*.** `reflectionDateKeys` writes a **daily** habit's text to every missed day the prompt just named (falling back to yesterday), so none is raised again — `getUnreflectedMissedDays` drops days that already carry one, so filing against the run's last day alone would bring the rest back tomorrow. A **weekly** habit's goes under the one day its prompt named, falling back to the day it was written.
 
-Target history: `target-history:{goalId}` → list of `TargetChange` JSON strings, appended chronologically (`rpush`), one per target the habit has had.
+**Weekly notes** are a headline plus three `string[]` sections: `wentWell`, `didntGoWell`, `actionItems`. `notes` (prose body) and `changes` (progress log) are retired — optional, never written, still rendered by `NoteCard` so older notes read back whole, and passed back through by `NoteForm` on edit so editing doesn't blank them. A few pre-sections bodies type their own `What went well` headings *inside* the prose, which renders as a wall of text — that's the tell for one still worth converting. When searching for them, glob `*note:*`, not `note:*`, or the prefixed namespaces are silently missed.
 
-Weekly notes: `note:{YYYY-WXX}` → `WeeklyNote`. A note is a headline plus the meeting's three sections - `wentWell`, `didntGoWell`, `actionItems`, each a `string[]` of bullets. `notes` (a single prose body) and `changes` (a progress log) are the retired shapes that preceded them: both are optional, nothing writes them any more, and `NoteCard` still renders them so notes written before the sections existed read back whole. Notes are being converted to sections backwards from the newest, per namespace, each rewritten in place with its `notes`/`changes` dropped. **Alan** (`note:*`): `2026-W37`/`W35`/`W34` when the sections were introduced, then `W29`/`W28`/`W27` (Sep 2026); `W30`–`W33` are empty "Vacation" placeholders, so `W13`–`W26` still carry prose. **Claude** (`claude:note:*`): `2026-W37`/`W35`/`W34` (Sep 2026); `W30`–`W33` are empty, so `W25`–`W29` still carry prose. Note that several pre-conversion bodies type their own `What went well` / `What did not go well` / `Action items` headings *inside* the prose blob, which renders as an unformatted wall of text - that's the tell for a note that still needs converting. When searching for notes to convert, glob `*note:*` rather than `note:*`, or the prefixed namespaces are silently missed. Keyed by **ISO-8601 week** (Monday-start; week 1 contains Jan 4; the year is the ISO year, so Mon Dec 29 2025 is `2026-W01`). `getWeekKey` in `lib/kv.ts` is the only thing that should compute one - `NotesView`'s client-side `getWeekKeyForDate` mirrors it and must stay in step. Until Aug 2026 `getWeekKey` phased weeks off Jan 4's weekday instead, so in 2026 it returned Sunday–Saturday weeks numbered one below ISO: on Wed Aug 26 it produced `2026-W34`, the key already holding the note labelled "Week of Aug 17", so writing "this week" would have overwritten last week's note. Stored notes were unaffected (their keys and labels were already ISO-correct), so the fix was to `getWeekKey` alone with no data migration. `legacyWeekKey` preserves the old numbering solely to read the two pre-existing `checkin:gym:2026-W1x` keys via the legacy fallback in `getWeeklyDaysCompleted`. Seeded via `seedInitialWeeklyNote()`, `seedWeeklyNoteW22()`, etc., all called in the GET handler of `app/api/notes/route.ts` - only for Alan's namespace (`!user`). Other users start with empty notes.
+Notes are keyed by **ISO-8601 week** (Monday-start; week 1 contains Jan 4; the ISO year leads, so Mon Dec 29 2025 is `2026-W01`). `getWeekKey` is the only thing that should compute one — `NotesView`'s client-side `weekKeyForDate` mirrors it and must stay in step. `legacyWeekKey` exists solely to read two pre-existing `checkin:gym:2026-W1x` keys via the fallback in `getWeeklyDaysCompleted`.
+
+**A note can only be *started* for last week or earlier** — it's the write-up of a meeting about a week that has finished. The picker offers last week and two weeks ago outright, plus a date field capped at last week's Monday that snaps any day back to its Monday. `getLatestNoteWeekKey` is the server half (week keys sort lexicographically, so it's a string comparison), and it gates **creation only** — an existing note stays editable whatever week it's filed under.
+
+**The notes tab loads the newest three weeks** and offers "load more" in threes (`GET /api/notes?limit=`, capped at 52; the response is `{ notes, total }`). `getAllWeeklyNotes` sorts the **keys** descending *before* slicing — `kv.keys` returns arbitrary order, so slicing first hands back random weeks. A week reached through the date selector can be older than the page has loaded, so `handlePickWeek` fetches it alone and uses the presence of `updatedAt` to tell a stored note from the API's empty shell; otherwise picking an old week opens a blank form that overwrites it on save. Such a note is edited above the list, since it has no card to turn into one.
 
 ## Goal schema
 ```ts
@@ -194,8 +150,8 @@ interface Goal {
   type?: "mood";        // only on emotional-checkin
   order?: number;       // drag-to-reorder position
   nudgeDays?: number[]; // 0=Sun…6=Sat; weekly goals only
-  nudgeTime?: string;   // "HH:MM" PST; gates when a habit enters the text-nudge rotation
-  nudgeEnabled?: boolean; // daily goals only; opt out of nudging, default true
+  nudgeTime?: string;   // "HH:MM" PST; gates when a habit enters the nudge rotation
+  nudgeEnabled?: boolean; // opt out of nudging, default true
   nudgeNumber?: number; // stable per-user 1..N id used in nudge texts ("reply 2")
   graduatedAt?: string;   // YYYY-MM-DD; presence = graduated, i.e. no longer tracked at all
   graduatedRun?: number;  // run frozen at graduation: days (daily) or weeks (weekly)
@@ -204,250 +160,217 @@ interface Goal {
 ```
 
 ## Key behaviors
-- **Goal ordering:** Drag-and-drop via `@dnd-kit`. Done goals always sink to bottom. Order persisted via `PATCH /api/goals` with `{ orderedIds: string[] }`.
-- **Reflection prompt:** `getReflectionPrompt()` in `lib/kv.ts` is the single source of truth for whether to ask, why, and whether the user can decline.
-  It returns a `ReflectionPrompt` (`lib/types.ts`) on `GoalStatus.reflection`, or `null` for "don't ask"; the client also requires `todayCount === 0`, so a goal prompts at most once a day.
-  Daily goals prompt with `missed-day`, which carries **every** missed day in the last `REFLECTION_LOOKBACK_DAYS` (14) that hasn't been reflected on yet, oldest first - not just yesterday.
-  Asking only about yesterday left two kinds of miss permanently unreachable, because the prompt fires on the *next check-in*: a day in the middle of a run (only the run's last day was ever a candidate), and a day whose next check-in came from the history grid's backfill, which doesn't go through the prompt at all.
-  Across 91 days of one daily habit that was 8 days and 2 days respectively, against 5 reflections actually collected.
-  `getUnreflectedMissedDays` excludes vacation days, days that already carry a reflection (re-asking would overwrite the answer), and days before the habit's first check-in - the last read off the tail of `history:{goalId}`, without which a habit added yesterday opens with a fortnight of misses it wasn't around for.
-  The window is bounded rather than open-ended because a reflection written in October about a day in June isn't a reflection, and because a dismissed prompt would otherwise re-ask forever.
-  Weekly goals are *judged* against the whole week, not a single day: a 3x/week habit skipped on Tuesday with four days still open is not behind and is not asked anything.
-  They prompt only when the days still open no longer outnumber the days still needed (`week-behind`), or when nothing is logged yet this week and last week closed below target (`week-missed`, capped at once per week).
-  A knife's edge of exactly one day is exempt: the prompt gates a check-in, and that check-in *is* the one day still needed - the user is finishing the week, not falling behind it. Without this a 1x/week habit done on the week's last day (Screen time Review, nudged on Sunday, done on Sunday) was told every single week that it "missed Saturday".
-  Vacation-paused days are dropped from the days remaining and prorate the target down, so a partly-paused week can't be "missed" for days the user was never expected to show up.
-  A day asked and answered settles its week: both weekly reasons stand down while the day they would name already carries a reflection, and a *new* miss after the answer re-opens the question about the new day.
-  Without this, a behind week re-named its missed Friday on every later day's check-in - and since a reflection is filed under the day it names, each forced re-answer overwrote the one before it.
-  Standing down on the named day alone, rather than walking back to older unfilled days, is deliberate: unfilled days aren't individually misses for a weekly habit, so one answer settles the week's question rather than owing an essay per empty day.
 
-  **But they ask about one day, not the week.** Both weekly reasons carry a `date`, and the modal says "Sunday you missed this" exactly the way a daily prompt does. "Last week you got 5 of 6" is a scoreboard: a week isn't a thing a person can account for, so it got answers about weeks. A day is answerable.
-  `lastMissedWeekDay` picks it: the most recent day of the week in question that was expected and went unfilled. **`nudgeDays` is preferred where it's set**, because that's the closest a weekly habit has to a schedule - 🏃 HIIT is 1x/week on Wednesday, so a week it missed is a *Wednesday* it missed, and naming Sunday would only be reporting where the week happens to end.
-  It's a fallback rather than a rule because `nudgeDays` is a *reminder* schedule and not a contract: several habits (Stretch, Salad, 7+ hr sleep) leave it empty, and 🎹 Piano asks for 5x/week while nudging on two days. A habit with no unfilled nudge day falls back to any unfilled day rather than insisting nothing was missed.
-  Today is never named (the day isn't over, and the user is checking in as we ask), nor is a paused day. That leaves `date: null` genuinely reachable - a week can be out of slack before any of its days have closed - and the modal keeps the old count wording for exactly that case.
-  **The reflection is filed under the day it names**, not the day it was written, so that day can't be asked about twice (the grid shows it elsewhere - see [Reflections in the grid](#key-behaviors)). `reflectionDateKeys` re-asks `getReflectionPrompt` rather than re-deriving which week and which day, since that choice is the prompt's and two copies of it would drift; it sees pre-check-in state because the client saves the reflection first.
-- **Required vs optional reflections:** `ReflectionPrompt.required` decides whether the reflection can be waved away.
-  A period that's already lost - yesterday, a closed-out week, a week whose target is now unreachable - is `required`; a knife's-edge week that's still winnable is not.
-  A daily prompt is `required` only when **yesterday** is one of the days it names: that's the one that has only just been lost. An older backlog is raised but not charged for, since a toll the user can't clear by doing the right thing today is how a prompt turns into something people learn to dismiss.
-  A required prompt drops the "just check in, skip reflection" link and needs `MIN_REFLECTION_CHARS` (15) before the check-in button enables.
-  It still closes via ✕ or backdrop, but closing does **not** check the habit in - that's the whole point, since the old skip link handed over the check-in for one tap.
-  This is UX friction, not enforcement: `POST /api/checkins` has no server-side gate (no auth, personal app), and backfilling past days from the history grid can still raise a week's count.
-- **Emotional Check-in** (`id: "emotional-checkin"`, `type: "mood"`): Opens mood emoji picker. "Log another" instead of "undo" when done. No position pin — user controls via drag.
-  `MoodModal` opens on a `REFLECT_SECONDS` (5) countdown showing "Reflect on your whole day." before the wheel, so an entry is a read on the day rather than a reflex tap on the last ten minutes.
-  The wheel is not mounted until the countdown ends - its slide-to-explore tutorial should play when the user arrives at it, not behind the countdown - and the countdown panel is height-matched to the wheel step so the sheet doesn't jump.
-  There is no skip; ✕ and the backdrop still close the modal outright.
-- **Target history:** every change to a habit's `frequency`/`targetCount` is appended to `target-history:{goalId}` and drawn as a step chart ("Target over time") under that habit's grid on the history page.
-  `recordTargetChange` in `lib/kv.ts` is called from `POST /api/goals` on every goal write and is a no-op unless the target actually moved, so renaming a habit or moving its nudge time logs nothing.
-  **It is a log, not a scoring input.** `getHistory`, both streaks and graduation all still judge every past period against the habit's *current* target; nothing reads target history to decide whether a day or a week was met.
-  `lib/target-history.ts` holds the pure part: `weeklyEquivalent` puts daily and weekly targets on one per-week axis (6x/week → daily is a step **up**, 6 → 7, which plotting raw `targetCount` would draw as a collapse to 1), and `buildTargetTrend` collapses records into segments, returning `null` when the target never moved so an unchanged habit gets no chart.
-  Two wrinkles worth knowing: several edits on one day collapse to the last (3x → 4x → 3x in one sitting is no change, not two steps), and a habit that predates this feature has no record of what it was changing *from*, so the first change writes a `backfilled` record of the old target whose date is the date we noticed rather than the true start - which is why the chart draws the run before the first change as a dashed, open-ended line.
-- **Streak units:** the history card labels the streak "day streak" or "week streak" per `goal.frequency`. A bare "🔥 9" on a card showing three months of grid reads as weeks even when it's days.
-- **Backfill:** Click a missed (gray) cell in the history grid to log it for that date. `POST /api/checkins` accepts `{ goalId, date }`.
-- **Reflections in the grid:** a cell's *fill* is the outcome (green done, gray missed, sky vacation) and an **amber inset ring** means "a reflection was written on this day", readable in the cell's tooltip.
-  **Written, literally: `getReflectionsByWrittenDay` keys the history payload by `savedAt`, not by the storage key.** A reflection is stored against the day it's *about* because that's what stops the prompt re-asking, but that's not where a person looks for it - they wrote it on Sunday morning about Saturday's miss, so Sunday is the day with writing on it. Two things follow: a ringed cell is usually **green**, since the modal saves the text seconds before the check-in it was gating, and one sitting rings **one** day - a daily reflection filed against a whole run of misses shares a single `savedAt`, so the run collapses to the day it was answered.
-  The re-keying has to read `REFLECTION_LOOKBACK_DAYS` further back than the 91-day window, or a reflection written on the window's first day about an earlier miss is missed - one wider `mget`, not another round trip. Where two reflections share a written day (🧠 Emotional Check-in has two, both saved 19 Sep 2026), the later `savedAt` wins.
-  Fill and ring are separate because a reflection is not evidence of a miss - and under written-day keying it's nearly the opposite. The grid used to read `reflections[period]` only when the cell was missed and paint it amber instead of gray, which silently dropped every reflection a weekly habit collected on a day it completed (7+ hr sleep had three from Sep 2026 stored and none on screen), and also cost "missed" its own colour.
-  The backfill confirmation reads the same map, so it shows a reflection only when one was written on the day being backfilled.
-- **Weekly streak for weekly goals:** Counted in weeks, not days. `getWeeklyStreak()` walks back 52 weeks.
-- **Graduation:** A habit the user has decided is automatic. `Goal.graduatedAt` (a `YYYY-MM-DD`) is the flag - its presence *is* "graduated", and `graduatedRun` freezes the run it had earned at that moment.
-  Graduating **stops tracking entirely**: no check-ins (`addCheckIn` throws `GraduatedGoalError`, which `POST /api/checkins` turns into a 409), no text nudges (`getPendingNudges` filters them out), no reflection prompts (`getReflectionPrompt` returns `null`), and no streak recomputation - `getGoalStatuses` short-circuits to the frozen values instead of hitting Redis, and `app/api/history` reports `graduatedRun` rather than a streak that would only decay.
-  The habit leaves the tracked list for a collapsible trophy shelf of emoji medallions at the top of the home screen (`TrophyShelf` in `HabitTracker.tsx`); "start tracking again" on a medallion is the only way back, since there is no automatic un-graduation.
-  `getReflectionPrompt` and `getGoalStatuses` both key off `isGraduated()`, so that helper is the single definition.
-  **Suggesting it:** `GoalStatus.canGraduate` drives an in-card offer once the run reaches `GRADUATION_PERIODS` (4) consecutive periods at target - 28 days for a daily habit, 4 weeks for a weekly one. Mood goals are never eligible (a journal isn't a habit to master). "not yet" sets `graduationSnoozedUntil` 14 days out; un-graduating sets it too, so a habit just taken off the shelf isn't immediately re-offered.
-  All three actions go through `PATCH /api/goals` with `{ goalId, graduation: "graduate" | "ungraduate" | "snooze" }` (the same PATCH also still handles `{ orderedIds }` for drag-reorder).
-  `nudgeNumber` is deliberately *not* renumbered on graduation, so a habit's reply number survives a round trip to the shelf and back.
-  **In the history tab, a graduated habit's card is frozen rather than rolling forward.**
-  `goalHistoryLabels` in `lib/kv.ts` ends its 91-day window at `graduatedAt` instead of today, and the target chart is passed the same end date, so the whole card reads as the run that earned the graduation.
-  This is the single decision the rest follows from: nothing can ever be recorded after graduation (`addCheckIn` throws, so no check-in and no backfill), which made every post-graduation cell one that could never be filled.
-  They used to be drawn in a third neutral colour and excluded from the completion-rate denominator - so once graduation fell more than 91 days back, *every* day in range was excluded, the denominator hit zero, and a habit that graduated for a perfect run rendered as a blank grid reading **0%**.
-  With the window frozen there are no such days left: the neutral colour, its legend swatch and the denominator exclusion are all gone, and `getHistory`'s entries no longer carry a `graduated` flag at all.
-  The card is also demoted out of the tracked list into a collapsible "🏆 Graduated · N" section at the bottom of the page (`GraduatedSection` in `HistoryView.tsx`), mirroring `TrophyShelf` on the home screen - collapsed by default where the shelf is open, since these are full-height cards rather than a row of medallions.
-  Its backfill handler is withheld (a graduated habit's cells would hand the user a tap that can only come back a 409) and its streak pill reads "final run" rather than "day streak", since the number was frozen and isn't still running.
-- **Vacation mode:** Per-user, per-habit pause (`VacationWindow { startDate, endDate, goalIds }` in `lib/kv.ts`, key `settings:vacation`). Can be scheduled for a future `startDate`, not just started immediately — `getActiveVacation` only returns a window once `startDate <= today`, so a scheduled-but-not-started window pauses nothing yet; `getUpcomingVacation` surfaces it for display before then. `endVacationNow` trims an active window to end yesterday (preserving vacation-day history) or, for a not-yet-started window, deletes it outright since nothing happened yet to preserve. `startVacation` always replaces any window that hasn't fully ended (active or upcoming) — only one vacation window is tracked "in flight" at a time.
+- **Goal ordering:** drag-and-drop via `@dnd-kit`; done goals sink to the bottom. Persisted via `PATCH /api/goals` with `{ orderedIds }`.
+- **Backfill:** clicking a missed (gray) history cell logs it for that date — `POST /api/checkins` accepts `{ goalId, date }`.
+- **Streak units:** the history card labels the streak "day streak" or "week streak" per `goal.frequency`; a bare "🔥 9" over a three-month grid reads as weeks.
+- **Weekly streaks** are counted in weeks. `getWeeklyStreak()` walks back 52.
+
+### Reflection prompt
+
+`getReflectionPrompt()` is the single source of truth for whether to ask, why, and whether the user can decline. It returns a `ReflectionPrompt` on `GoalStatus.reflection` or `null`; the client also requires `todayCount === 0`, so a habit prompts at most once a day.
+
+**Daily habits** prompt with `missed-day`, carrying **every** unreflected missed day in the last `REFLECTION_LOOKBACK_DAYS` (14), oldest first. Asking only about yesterday left two kinds of miss permanently unreachable, since the prompt fires on the *next check-in*: a day in the middle of a run, and a day whose next check-in came from the history grid's backfill. `getUnreflectedMissedDays` excludes vacation days, days that already carry a reflection (re-asking overwrites the answer), and days before the habit's first check-in (read off the tail of `history:{goalId}` — otherwise a habit added yesterday opens with a fortnight of misses it wasn't around for). The window is bounded because a reflection written in October about a day in June isn't a reflection, and a dismissed prompt would otherwise re-ask forever.
+
+**Weekly habits are judged against the whole week.** A 3x/week habit skipped on Tuesday with four days open is not behind and is asked nothing. They prompt only when the days still open no longer outnumber the days still needed (`week-behind`), or when nothing is logged this week and last week closed below target (`week-missed`, once per week). A knife's edge of exactly one day is exempt — the prompt gates a check-in, and that check-in *is* the day still needed. Vacation-paused days drop out of the days remaining and prorate the target down. A day asked and answered settles its week: both weekly reasons stand down while the day they'd name already carries a reflection, and a *new* miss reopens the question about the new day.
+
+**Weekly prompts name one day, not the week** — "Sunday you missed this", the way a daily prompt does, because a week isn't a thing a person can account for. `lastMissedWeekDay` picks the most recent expected-and-unfilled day. **`nudgeDays` is preferred where set** — it's the closest a weekly habit has to a schedule — but is a fallback rather than a rule, since it's a *reminder* schedule, not a contract (several habits leave it empty; Piano asks 5x/week while nudging twice). Today is never named, nor a paused day, which leaves `date: null` genuinely reachable; the modal keeps count wording for that case.
+
+**`required`** decides whether the reflection can be waved away. A period that's already lost — yesterday, a closed-out week, a week now unreachable — is required; a knife's-edge week still winnable isn't. A daily prompt is required only when **yesterday** is among the days it names: an older backlog is raised but not charged for, since a toll the user can't clear today is how a prompt becomes something people dismiss. A required prompt drops the skip link and needs `MIN_REFLECTION_CHARS` (15) before the check-in button enables; ✕ and backdrop still close it, but closing does **not** check the habit in. This is UX friction, not enforcement — `POST /api/checkins` has no server-side gate.
+
+### Reflections in the history grid
+
+A cell's **fill** is the outcome (green done, gray missed, sky vacation); an **amber inset ring** means a reflection was *written* that day, named in the tooltip.
+
+**`getReflectionsByWrittenDay` keys the history payload by `savedAt`, not by the storage key.** A reflection is stored against the day it's *about* so the prompt can't re-ask, but that's not where a person looks for it — they wrote it Sunday morning about Saturday's miss. Two consequences: a ringed cell is usually **green** (the modal saves seconds before the check-in it was gating), and one sitting rings **one** day (a daily reflection filed across a run of misses shares a single `savedAt`). Where two share a written day, the later `savedAt` wins. The re-keying reads `REFLECTION_LOOKBACK_DAYS` further back than the 91-day window — one wider `mget`, not another round trip — or a reflection written on the window's first day about an earlier miss is missed.
+
+Fill and ring are separate because a reflection is not evidence of a miss. Painting a missed cell amber instead of gray drops every reflection a weekly habit collects on a day it completed, and costs "missed" its own colour. The backfill confirmation reads the same map.
+
+### Emotional Check-in
+
+`id: "emotional-checkin"`, `type: "mood"`. Opens the mood wheel; "Log another" instead of "undo" when done; no position pin.
+
+`MoodModal` opens on a `REFLECT_SECONDS` (5) countdown ("Reflect on your whole day.") so an entry is a read on the day rather than a reflex tap on the last ten minutes. The wheel isn't mounted until the countdown ends — its slide-to-explore tutorial should play when the user arrives at it — and the countdown panel is height-matched to the wheel step so the sheet doesn't jump. **There is no 😐 Neutral, and don't add one**: it's the one option that records nothing, and sitting mid-wheel it's the easiest thing to land on, so it throws away the deliberation the countdown just bought. `TUT_STEPS` derives from `WHEEL_EMOTIONS.length` so the tutorial can't fall out of step. No skip; ✕ and backdrop close outright.
+
+### Target history
+
+Every change to a habit's `frequency`/`targetCount` is appended to `target-history:{goalId}` and drawn as a step chart under its history grid. `recordTargetChange` is called from `POST /api/goals` on every write and no-ops unless the target moved.
+
+**It is what every past period is scored against.** A week is judged against the target the habit had *that week*: `targetAsOf(changes, date, goal)` walks to the last record on or before a date, and `targetOn` layers a vacation week's planned target on top. Both streak walks, `buildHistory`'s done/missed fill, the completion rate, graduation and the weekly reflection prompt all resolve through it — otherwise raising a target breaks a live streak and lowering one invents weeks that were never met. `primeTargetHistories` is therefore in `getGoalStatuses`'s priming wave, not just the history page's.
+
+Two things it is **not**: nothing reads it to decide what to nudge about (the ladder uses the live target), and a `frequency` change isn't converted — a daily↔weekly reshape ends the streak rather than being rescored, which is what `streakOffset` covers for the one historical reshape.
+
+`lib/target-history.ts` is the pure part: `weeklyEquivalent` puts daily and weekly targets on one per-week axis (6x/week → daily is a step **up**, 6 → 7, which raw `targetCount` would draw as a collapse to 1), and `buildTargetTrend` collapses records into segments, returning `null` when nothing moved. Several edits on one day collapse to the last. A habit predating the feature has no record of what it changed *from*, so the first change writes a `backfilled` record dated when we noticed — which is why the chart draws the run before it as a dashed, open-ended line.
+
+### Graduation
+
+A habit the user has decided is automatic. `Goal.graduatedAt` is the flag — its presence *is* graduated — and `graduatedRun` freezes the run earned at that moment. `isGraduated()` is the single definition.
+
+Graduating **stops tracking entirely**: no check-ins (`addCheckIn` throws `GraduatedGoalError` → 409), no nudges, no reflection prompts, and no streak recomputation (`getGoalStatuses` short-circuits to the frozen values; `/api/history` reports `graduatedRun`). The habit moves to a collapsible trophy shelf of emoji medallions at the top of the home screen (`TrophyShelf`); "start tracking again" is the only way back.
+
+**Offering it:** `GoalStatus.canGraduate` fires once the run reaches `GRADUATION_PERIODS` (4) consecutive periods at target — 28 days or 4 weeks. Mood goals are never eligible. "not yet" sets `graduationSnoozedUntil` 14 days out; un-graduating sets it too. All three actions go through `PATCH /api/goals` with `{ goalId, graduation: "graduate" | "ungraduate" | "snooze" }` (the same PATCH still handles `{ orderedIds }`).
+
+**In the history tab a graduated card is frozen, not rolling forward.** `goalHistoryLabels` ends its 91-day window at `graduatedAt`, and the target chart gets the same end date, so the card reads as the run that earned it. This follows from nothing being recordable after graduation: with a rolling window every post-graduation cell is one that can never be filled, and excluding them from the completion-rate denominator means a habit graduated more than 91 days ago renders as a blank grid reading 0%. The card also demotes into a collapsible "🏆 Graduated · N" section at the bottom (`GraduatedSection`), collapsed by default where the shelf is open. Its backfill handler is withheld (a tap that can only return 409) and its streak pill reads "final run".
+
+### Vacation mode
+
+Per-user, per-habit, **per-week plan**: `VacationWindow { startDate, endDate, goalIds, plan }` at `settings:vacation`.
+
+**Planned in advance, habit by habit and week by week, with nothing prefilled.** `VacationWeekPlan` carries one `VacationGoalPlan` (`{ targetCount, nudgeTime?, nudgeDays?, nudgeEnabled? }`) per habit per ISO week the trip touches; `POST /api/vacation` rejects any missing week or undecided habit by name. `targetCount: 0` is how "not this week" is said, and `startVacation` derives the legacy `goalIds` from exactly those zeros so a window still reads as "these habits are paused" to anything that only knows the old shape (`isVacationDay` falls back to `goalIds` for pre-planning windows).
+
+A plain list of habits to pause can't express the middle — "the gym's off but I'm keeping the stretching", "three piano sessions instead of five" — which makes a trip all-or-nothing per habit and makes ticking everything the path of least resistance. `app/components/VacationPlanner.tsx` offers Skip / keep-the-current-target / a custom number per habit per week, rings undecided rows amber, disables Save until none are left, and hides an optional per-week nudge override behind each kept habit.
+
+**A planned week is scored at the target the user chose**, through the same `targetOn` resolver as a target change. A week planned off is neutral in both streak walks — it neither counts nor breaks — and a kept week that missed its own reduced target still breaks. `getNudgeCandidates` drops a habit planned off and applies the week's `nudgeTime`/`nudgeDays`/`nudgeEnabled` to one that's kept, which is why the `nudgeEnabled === false` check sits at the top of `getPendingNudges` rather than in its daily branch — a vacation week has to be able to silence a weekly habit too.
+
+`weeksInRange` / `mondayOfWeekKey` in `lib/dates.ts` are what the planner and the route agree on for "which weeks does this trip touch". A window can be scheduled for a future `startDate`: `getActiveVacation` only returns it once `startDate <= today`, `getUpcomingVacation` surfaces it before then. `endVacationNow` trims an active window to end yesterday (preserving vacation-day history) or deletes a not-yet-started one outright. `startVacation` replaces any window that hasn't fully ended — only one is in flight at a time.
+
+## Writing a meeting up from its recording (Fathom)
+
+"🎙️ Write up a recorded meeting" at the bottom of the notes tab takes a Fathom share link and writes **last week's note for both Alan and Claude at once**.
+
+- **`lib/fathom.ts`** — `fetchFathomTranscript(shareUrl)`. A Fathom share page is an Inertia.js app, so the page state is one HTML-escaped JSON blob in a `data-page` attribute; `props.copyTranscriptUrl` is the URL behind their own "copy transcript" button and already carries the share token. It returns `{ html, plain_text }`; use `plain_text` (the same transcript without per-turn timestamp links, ~5× fewer tokens), with the HTML strip as a fallback since that field is theirs, not ours. **The token is the entire authorization** — the endpoint without it answers 401 — so there's no API key to hold. The flip side is that this is a scrape: their markup changing breaks it, and a revoked link fails at the fetch. `isFathomShareUrl` accepts only `https://fathom.video/share/<token>`.
+- **`lib/meeting-notes.ts`** — `summarizeMeeting(transcript, people)` calls `claude-opus-5` with adaptive thinking at `effort: "medium"` and a `json_schema` structured output, returning `{ headline, wentWell, didntGoWell, actionItems }` per person. Streamed, with `maxDuration = 120` on the route, because a half-hour transcript summarized twice doesn't fit a default function lifetime; `medium` is the same tradeoff, since the hard part is obeying the action-item rule rather than reasoning to an answer.
+  **The action-item rule is the whole reason this isn't just "summarize the call".** An action item must map onto a habit the person actually tracks; everything else a call covers — favours, side projects, logistics — can colour the headline but can't become one, or the note stops being the record of a habit review. It must also be specific and new ("keep going to the gym" isn't one). Anything about the app itself is filed under `claude`, whoever raised it.
+  **Each person's habit list is passed in** rather than scraped from their history page — same list `getGoals` holds, minus graduated — and that's what makes the rule checkable. The reply is re-keyed by `userId` and one summary returned per person asked about, so a model that drops someone or invents a third id can't write into a namespace nobody reads.
+- **`app/api/meeting-notes/route.ts`** — `POST { url }`. The pair is hardcoded (`["alan", "claude"]`): it's their meeting, and letting the caller name namespaces would only be a way to write into the wrong one. No preview step — the note is editable from its card the moment it lands. Failures come back as a readable message with a 502, since a dead link or a transcript-less call are things the person who pasted the link can act on.
+- The button is hidden for other users (`MEETING_PAIR` in `NotesView.tsx`) — decluttering, not permission.
+- Env var: `ANTHROPIC_API_KEY` (shared with the coach).
 
 ## Coach chat (digital twin)
 
-Per-user chat (`/[user]/coach`, `app/components/CoachView.tsx`) with an LLM persona grounded in transcripts of a personal-development audio program (owned by Alan, ingested for strictly personal/private use — not distributed). Architecture:
-- **`lib/vector.ts`** — `searchTranscripts(query, topK)` semantic-searches the ingested transcript chunks via Upstash Vector's hosted-embedding `data` field (no separate embeddings step). The index is **shared with the unrelated `provenance-mcp` project** (same Upstash Vector database/credentials, which live in both repos' `.env.local`) — this app's chunks live in the `coach-transcripts` namespace so they never collide with provenance-mcp's zod-commit vectors in the default namespace.
-- **`scripts/ingest-transcripts.mjs`** — one-time/manual script (`node scripts/ingest-transcripts.mjs <folder>`) that walks a folder of `Day N .../*.txt` transcripts, strips timestamp/speaker markup, chunks (~3000 chars, ~300 overlap), and upserts into the `coach-transcripts` namespace with deterministic ids (`day-session-chunkIndex` slug) — safe to re-run.
-- **`lib/coach.ts`** — builds the system prompt (persona instructions + retrieved excerpts) and streams a reply via `@anthropic-ai/sdk` (`claude-sonnet-5`).
-- **`lib/kv.ts`**'s `CoachMessage`/`getCoachMessages`/`addCoachMessage` — chat history stored the same way as `journal`/`mood` (`rpush`, chronological order), key `coach:chat` / `{userId}:coach:chat`.
-- **`app/api/coach/route.ts`** — `GET` returns history; `POST { message, attachments? }` saves the user message, retrieves excerpts, and streams the assistant reply as plain text, persisting the full text once the stream ends.
-- **Attachments** — the user can attach text files, images, or PDFs to a single message (paperclip button in `CoachView.tsx`, read client-side via `FileReader`). These are **one-off context for that turn only** — never persisted as files or added to the vector index. Text attachments get appended into the persisted message text (so they naturally stay in later turns' history context); images/PDFs are sent as base64 content blocks (`ChatAttachment` in `lib/coach.ts`) to Claude for that turn only, with just a `[Attached image: ...]`-style marker persisted to history. Server-side caps in `app/api/coach/route.ts`: 5 attachments/message, 50k chars/text file, ~10MB/binary file.
-- **Inline citations** — `lib/coach.ts`'s `CITATION_INSTRUCTION` tells the model to cite `(Day — Session)` inline whenever a point is actually drawn from a retrieved excerpt, and to skip citing when it's speaking from general principles or the user's own attached material. `renderBold()` in `CoachView.tsx` renders the `**bold**` markdown the coach's replies use for step/section headers.
-- **Retrieval is context-aware, not just the literal last message** — `app/api/coach/route.ts` builds the `searchTranscripts` query from the prior turn's text + the new message (not the new message alone), so short follow-ups like "add your references" or "tell me more" retrieve excerpts about the topic under discussion instead of searching on the follow-up's own (semantically empty) text.
-- **`scripts/backfill-coach-citations.mjs`** — one-time/manual script (`node scripts/backfill-coach-citations.mjs [user]`) that retroactively adds citations to assistant replies that predate `CITATION_INSTRUCTION`. Re-derives the original query from each user message (strips the `\n\n--- filename ---`/`\n\n[Attached...]` attachment markers off first), re-runs `searchTranscripts`, and asks Claude to insert citation markers into the *existing* reply text without rewording anything else. Idempotent (skips replies that already have a `(Day N` citation) and non-destructive (`kv.lset` updates one list index in place; skips rather than guesses when nothing in a reply is actually excerpt-grounded).
-- Env vars: `UPSTASH_VECTOR_REST_URL`, `UPSTASH_VECTOR_REST_TOKEN`, `ANTHROPIC_API_KEY` (all currently copied from `provenance-mcp/.env` — see above).
+Per-user chat (`/[user]/coach`, `app/components/CoachView.tsx`) with an LLM persona grounded in transcripts of a personal-development audio program (owned by Alan, ingested for strictly personal use — not distributed).
+
+- **`lib/vector.ts`** — `searchTranscripts(query, topK)` against Upstash Vector's hosted-embedding `data` field (no separate embeddings step). The index is **shared with the unrelated `provenance-mcp` project** (same credentials in both repos' `.env.local`); this app's chunks live in the `coach-transcripts` namespace so they never collide with provenance-mcp's vectors in the default one.
+- **`lib/coach.ts`** — builds the system prompt (persona + retrieved excerpts) and streams a reply via `@anthropic-ai/sdk` (`claude-sonnet-5`). `CITATION_INSTRUCTION` asks for an inline `(Day — Session)` wherever a point is actually drawn from an excerpt, and for no citation when speaking from general principles. `renderBold()` in `CoachView.tsx` renders the `**bold**` the replies use for headers.
+- **`app/api/coach/route.ts`** — `GET` returns history; `POST { message, attachments? }` saves the user message, retrieves excerpts and streams the reply, persisting it once the stream ends. **Retrieval is context-aware**: the query is the prior turn's text + the new message, so short follow-ups ("tell me more") retrieve the topic under discussion rather than their own semantically empty text.
+- **Attachments** — text files, images or PDFs on a single message, read client-side via `FileReader`. **One-off context for that turn only** — never persisted as files or indexed. Text attachments are appended into the persisted message text (so they stay in later turns' history); images/PDFs go as base64 blocks for that turn with only an `[Attached image: ...]` marker persisted. Caps: 5 attachments, 50k chars/text file, ~10MB/binary.
+- **Storage** — `CoachMessage`/`getCoachMessages`/`addCoachMessage` in `lib/kv.ts`, `rpush` to `coach:chat` / `{userId}:coach:chat`.
+- Env vars: `UPSTASH_VECTOR_REST_URL`, `UPSTASH_VECTOR_REST_TOKEN`, `ANTHROPIC_API_KEY`.
+
+**One-off scripts** (manual, idempotent, safe to re-run): `scripts/ingest-transcripts.mjs <folder>` chunks `Day N .../*.txt` transcripts (~3000 chars, ~300 overlap) into the `coach-transcripts` namespace with deterministic ids. `scripts/backfill-coach-citations.mjs [user]` adds citations to replies that predate `CITATION_INSTRUCTION`, re-deriving each query, re-running retrieval, and asking Claude to insert markers into the *existing* text without rewording; it skips replies that already have one and skips rather than guesses when nothing is excerpt-grounded.
 
 ## Migrations (run on every `getGoals()` call)
-Add new ones at the bottom of the migration block in `getGoals()`, before `if (changed) await kv.set("goals", goals)`:
-- Sleep goal added if missing
-- `emotional-checkin` goal added if missing
-- Eye ointment: `targetCount` bumped from 5 → 6 if still at 5 (June 2026)
-- Salad upgraded from 6x/week to daily, preserving streak as `streakOffset` (June 2026)
 
-Note: migrations in that block are Alan-only (`!userId`). A separate check right after it — `goals.some((g) => g.nudgeNumber == null)` — backfills `Goal.nudgeNumber` and runs for every user, since nudge numbering isn't Alan-specific.
+Add new ones at the bottom of the migration block in `getGoals()`, before `if (changed) await kv.set("goals", goals)`. That block is **Alan-only** (`!userId`); the `nudgeNumber` backfill right after it runs for everyone.
 
-## Adding a weekly note
+Current: sleep goal added if missing · `emotional-checkin` added if missing · eye ointment 5 → 6 · salad 6x/week → daily, preserving its streak as `streakOffset`.
 
-The seed functions in `lib/kv.ts` are **lazy** — they only run the first time the notes API is hit, so a newly deployed seed won't appear until someone loads the app. To write a note immediately, write directly to Redis with curl.
+## Writing a note straight to Redis
 
-### Immediate write (preferred)
-
-Figure out the ISO week key first. "Last week" relative to the current date: count back to the Monday of that week, then use `YYYY-Www` format (e.g. Jun 22–28 2026 = `2026-W26`, week of Jun 22 = "Week of Jun 22").
+Useful when you want one to exist without going through the form. Work out the ISO week key first (`2026-W26` = week of Mon Jun 22).
 
 ```bash
 curl -s -X POST "$UPSTASH_REDIS_REST_URL/set/note:2026-W26" \
   -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$(node -e "
-const note = {
+process.stdout.write(JSON.stringify({
   week: '2026-W26',
   weekLabel: 'Week of Jun 22',
   headline: 'Short headline here',
-  // The meeting's four sections. One string per bullet - the card renders each list, and the
-  // form edits each as one-bullet-per-line in a textarea.
-  wentWell: ['...'],
+  wentWell: ['...'],        // one string per bullet
   didntGoWell: ['...'],
   actionItems: ['...'],
-  // `notes` (prose body) and `changes` (progress log) are both retired - new notes omit them.
-  // NoteCard still renders them for notes written before the sections existed, and NoteForm
-  // passes them back through on edit so editing an old note doesn't blank its prose.
-  updatedAt: new Date().toISOString(),
-};
-process.stdout.write(JSON.stringify(note));
+  updatedAt: Date.now(),
+}));
 ")"
 ```
 
-**CRITICAL:** use `process.stdout.write(JSON.stringify(note))` — NOT `console.log(JSON.stringify(JSON.stringify(note)))`. Double-encoding stores a string-of-a-string in Redis, so the app reads the note back as a string rather than an object and the card renders with no label, no headline and no sections.
+⚠️ **Use `process.stdout.write(JSON.stringify(note))`, never `console.log(JSON.stringify(JSON.stringify(note)))`.** Double-encoding stores a string-of-a-string, and the card then renders with no label, no headline and no sections. Verify the result is `dict`, not `str`:
 
-Verify the write worked (result should be `dict`, not `str`):
 ```bash
 curl -s "$UPSTASH_REDIS_REST_URL/get/note:2026-W26" \
   -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" | \
-  python3 -c "import sys,json; d=json.load(sys.stdin); v=json.loads(d['result']); print(type(v).__name__, list(v.keys()))"
+  python3 -c "import sys,json; v=json.loads(json.load(sys.stdin)['result']); print(type(v).__name__, list(v.keys()))"
 ```
 
-The curl command is all that's needed — no seed functions, no code changes required.
-
 ## Dev
+
 ```bash
 nvm use              # node 24.21.0, per .nvmrc — the version CI runs
 npm run dev          # localhost:3000
-npm run deploy       # git push (Vercel deploys from main) via scripts/deploy.sh
 npm run verify       # the full CI sequence — run this before pushing
 npm run verify:quick # lint + typecheck + test, for the inner loop
 npm test             # vitest run
-npm run test:watch   # vitest in watch mode
+npm run deploy       # git push (Vercel deploys from main)
 ```
-Env vars needed: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` (in `.env.local`).
+Env vars: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` in `.env.local`.
 
-### Local/CI parity
+**Local/CI parity.** `npm run verify` mirrors `.github/workflows/ci.yml` step for step — env check, lock check, lint, typecheck, test, build — so a green verify means a green CI. Change one and change the other.
 
-`npm run verify` mirrors `.github/workflows/ci.yml` step for step — env check, lock check, lint, typecheck, test, build — so a green verify means a green CI. Change one and change the other.
+The toolchain is pinned in **`.nvmrc` (24.21.0)**, read by CI via `node-version-file` and locally by `nvm use`. npm isn't pinned separately — it's whatever that node ships, so matching node matches both. `engines.node` is `24.x` because Vercel selects only a major; `engines.npm` records what `.nvmrc` ships. `scripts/check-env.mjs` fails when the running toolchain isn't that pair (`SKIP_ENV_CHECK=1` overrides).
 
-The toolchain is pinned in **`.nvmrc` (24.21.0)**, which CI reads via `node-version-file` and `nvm use` reads locally. npm is not pinned separately; it's whatever that node ships (11.19.0), so matching node matches both. `engines.node` is `24.x` because Vercel only selects a major and stopped building Node 20 on 1 Oct 2026; `engines.npm` records the npm that `.nvmrc` ships. `scripts/check-env.mjs` fails when the running toolchain isn't that pair (`SKIP_ENV_CHECK=1` overrides).
-
-This is not ceremony — it's the fix for a failure that actually happened. CI asked for `node-version: 20`, which resolved to whatever 20.x was newest that week; local dev ran a different node with a different bundled npm. npm versions disagree about which optional peer deps belong in a lock file, so `package-lock.json` written locally by npm 11.6 was **rejected outright** by CI's npm 10.8 (`Missing: @emnapi/core from lock file`), and `npm ci` died before lint, test or build ran at all. CI was red for several pushes that way, and nothing run locally could reproduce it. `npm run check-lock` (`npm ci --dry-run`) is the second half of that fix: it catches a desynced lock in about a second, which is the one failure mode that a passing local test suite says nothing about.
+⚠️ **This isn't ceremony.** npm versions disagree about which optional peer deps belong in a lock file, so a `package-lock.json` written by one npm can be **rejected outright** by another (`Missing: @emnapi/core from lock file`) and `npm ci` dies before lint, test or build runs — reproducible nowhere but CI. `npm run check-lock` (`npm ci --dry-run`) catches a desynced lock in about a second, which is the one failure a passing local test suite says nothing about.
 
 ## Latency instrumentation
 
-Upstash is REST: every command is its own HTTPS round trip, with no pipelining anywhere in `lib/kv.ts`.
-So what decides whether a page feels instant is almost entirely **how many commands a request issues**, and that number is invisible in the code — it's the product of a per-goal loop and a per-day loop several call frames apart.
-`lib/perf.ts` counts it.
+Upstash is REST: every command is its own HTTPS round trip, no pipelining. **What decides whether a page feels instant is almost entirely how many commands a request issues** — a number that's invisible in the code, being the product of a per-goal loop and a per-day loop several frames apart. `lib/perf.ts` counts it.
 
-- **`instrumentRedis`** wraps the client in `lib/kv.ts`. Every command is counted and timed against the current request, and the keys of every *read* are recorded so re-reads within one request are visible.
-- **`span(name, fn)`** times a named block. Spans run concurrently, so summed span time exceeds the request's wall clock — the count and the per-span total are what's meaningful, not the sum.
-- **`withPerf(label, handler)`** wraps every handler in `app/api/*/route.ts`. It logs one line per request and sets `Server-Timing`, so the same numbers appear in the browser's network panel next to the request that caused them. `measure()` is the same thing for server components (`app/page.tsx`).
-- **`lib/client-perf.ts`**'s `timedFetch` replaces `fetch` for every `/api/` call in the view components, and reads `Server-Timing` back off the response so the client wait and the server time land on one line. `logFirstData(view)` logs navigation-start → first-content, which is the only number that includes the JS download and hydration that must finish before the first fetch is even issued — no server log contains it.
+- **`instrumentRedis`** wraps the client in `lib/kv.ts`: every command counted and timed against the current request, and the keys of every *read* recorded so re-reads are visible.
+- **`span(name, fn)`** times a named block. Spans run concurrently, so summed span time exceeds wall clock — the count and per-span total are what's meaningful.
+- **`withPerf(label, handler)`** wraps every `app/api/*/route.ts` handler: one log line per request plus `Server-Timing`, so the numbers appear in the browser network panel next to the request. `measure()` is the same for server components.
+- **`lib/client-perf.ts`**'s `timedFetch` replaces `fetch` for every `/api/` call in the views and reads `Server-Timing` back off the response. `logFirstData(view)` logs navigation-start → first-content — the only number including the JS download and hydration that must finish before the first fetch is even issued.
 
-Collection is always on (a counter and a `performance.now()` per command). `PERF_VERBOSE=1` adds the per-span, per-command and re-read breakdown:
+Collection is always on. `PERF_VERBOSE=1` adds the per-span, per-command and re-read breakdown:
 
 ```bash
 PERF_VERBOSE=1 npm run dev
-# [perf] GET /api/goals 335ms | redis=135cmd/332ms | keys=252uniq/183repeat | spans: … | re-read: settings:vacationx26 · …
+# [perf] GET /api/goals 179ms | redis=20cmd/170ms | keys=42uniq/0repeat | spans: … 
 ```
 
-`redis=Ncmd/Mms` is command count and the wall-clock time with *at least one* command in flight — compare `M` to the request total to see how much of a route is Redis and nothing else. `keys=Xuniq/Yrepeat` is the waste measure: `Y` is how many reads asked for a key this request had already fetched.
+`redis=Ncmd/Mms` is count and the wall-clock time with at least one command in flight — compare `M` to the request total. `keys=Xuniq/Yrepeat` is the waste measure: `Y` is reads for a key this request already fetched.
 
-### What it found, and what fixed it
+### The four things that keep it fast
 
-Measured Sep 2026 against Alan's 13 habits at ~12ms RTT to Upstash. `GET /api/goals` issued **135 round trips** and was 99% Redis-blocked; the home page took 778ms to show a habit.
+1. **A request-scoped read cache** (`lib/request-cache.ts`), opened by `withPerf` for the length of one request. `settings:vacation` is wanted once per goal by each of three functions; no single call site is wrong, so it's fixed at the request level. **It stores the promise, not the value** — the duplicate callers run inside one `Promise.all` and all ask before any answer arrives, so a value cache would miss every time. Every write in `lib/kv.ts` calls `invalidate()`. Outside a request it's a transparent passthrough.
+2. **Priming before fan-out.** `primeDayKeys` and `primeHistoryLengths` fetch every goal's per-day keys (one `mget`: the current week plus each daily goal's reflection lookback) and every goal's history length and first check-in (one pipeline) *before* the per-goal calls, which then hit the cache. `primeTargetHistories` does the same for target history. An `mget`'s cost is the round trip and almost nothing else, so what matters is that each stays *one* command however wide it gets. These are the only places that know a fan-out is happening.
+3. **Block-wise streak walks.** Both streaks read a block at a time (`STREAK_DAY_BLOCKS`, `STREAK_WEEK_BLOCKS`), fetching the next only if the previous ran out with the streak alive — a 100-day streak was otherwise 100 serialized `get`s. The blocks **grow** (14, 28, 56, 112, 155) rather than being one fixed width: `mget` is not free per key, so a flat wide block costs more in payload than it saves in round trips.
+4. **Server-rendered tracker and history pages**, so the document → chunks → hydrate chain doesn't have to finish before the first fetch is issued. See [Stack](#stack).
 
-| | before | after |
-|---|---|---|
-| `/alan` first content | 778ms | **332ms** |
-| `/alan/history` first content | 872ms | **232ms** |
-| goals query | 335ms, 135 cmds | **179ms, 20 cmds** |
-| history query | 557ms, 117 cmds | **111ms, 39 cmds** |
-| `/api/mood` | 727ms, 55 cmds | **25ms, 2 cmds** |
-| `/api/notes` | 321ms, 25 cmds | **34ms, 2 cmds** |
+`getAllMoodEntries` and `getAllWeeklyNotes` are a `keys` scan plus one pipeline/`mget`, not a `get` per key.
 
-Four distinct causes, each with its own fix:
+### ⚠️ The function must sit next to Redis
 
-1. **Duplicate reads — 42% of `/api/goals`'s key reads were for keys it had already fetched.** `settings:vacation` was read 26 times, once per goal by each of `getDailyStreak`, `getWeeklyStreak` and `getReflectionPrompt`; each habit's current-week keys three or four times. No single call site was wrong, which is why **`lib/request-cache.ts`** fixes it at the request level instead: a read-through cache opened by `withPerf` for the length of one request. It stores the **promise**, not the value — the duplicate callers run inside one `Promise.all`, so they all ask before any answer arrives and a value cache would miss every time. Every write in `lib/kv.ts` calls `invalidate()` for the keys it touched. Outside a request it's a transparent passthrough.
-2. **Breadth — `getGoalStatuses` ran four Redis-hitting functions per goal, unbatched.** `primeDayKeys` and `primeHistoryLengths` now fetch every goal's per-day keys (one `mget`: the current week, plus each daily goal's reflection lookback window) and every goal's history length and first check-in (one pipeline) *before* the per-goal fan-out, so the per-goal calls are cache hits.
-   An `mget`'s cost is the round trip and almost nothing else - measured flat at ~10ms from 13 keys to 390 - so what matters is that each of these stays *one* command however many habits and days it covers, not how wide it is. These two functions are the only places that know a fan-out is happening; nothing downstream had to learn it. `primeTargetHistories` does the same for the history page's 13 `lrange`s.
-3. **Depth — `getDailyStreak` was a `for` loop of up to 365 awaited single `get`s**, so its cost scaled with the streak it was measuring: a 100-day streak meant 100 serialized round trips. Both streak walks now read a block at a time (`STREAK_DAY_BLOCKS`, `STREAK_WEEK_BLOCKS`), fetching the next block only if the previous ran out with the streak still alive. The blocks **grow** (14, 28, 56, 112, 155 days) rather than being one fixed width — the first attempt used a flat 60 and was a wash, because `mget` is not free per key: a 73-key `mget` measured 45ms against 12ms for a small one, and 13 goals each pulling 60-80 keys cost more in payload than the round trips it saved.
-4. **The client-render waterfall — 350ms elapsed before the first fetch was even issued.** The tracker was a client component that shipped a skeleton, so the document → chunks → hydrate chain had to finish first. Those pages are server-rendered now (see [Stack](#stack)).
+**`vercel.json` pins `regions: ["sfo1"]`, and that is worth more than every code change above combined.** The Redis database resolves to AWS **us-west-1**; Vercel's default is **`iad1` (Virginia)**, so every round trip crossed the continent — roughly 65ms against 9ms, multiplying against the round-trip *count*. `x-vercel-id: sfo1::iad1::…` on a production response is the tell: request enters at the SF edge, function executes in Virginia.
 
-`getAllMoodEntries` and `getAllWeeklyNotes` were separate, simpler N+1s: a `keys` scan followed by one `lrange`/`get` per key. Now a `keys` scan plus one pipeline/`mget`.
+Single-region pinning works on the hobby plan (multi-region needs Pro). If `vercel.json` ever drops it, the equivalent is Project Settings → Functions → Region. **Never let this drift back to a default**, and if the Redis database is moved or recreated, re-check its region and move this with it.
 
-### Region: the function must sit next to Redis
+### Why there's no data cache
 
-**`vercel.json` pins `regions: ["sfo1"]`, and that is not cosmetic — it was worth more than every code change above combined.**
+The tracker renders in ~46ms warm (20 commands, ~4 sequential waves) and ~190ms on a cold start, the difference being the TLS handshake to Upstash plus JIT rather than extra queries. So cold start, not query volume, is what's left — and a cross-request cache could save at most those 46ms while paying in staleness about whether a habit is checked in, the single fact the app exists to record. The cache that mattered is the request-scoped one, which can't outlive the request.
 
-The Redis database resolves `awake-horse-74703.upstash.io` → `global-latency.upstash.io` → `global-us2.upstash.io` → `52.52.x.x`, which is AWS **us-west-1 (N. California)**. It's an Upstash *Global* database, so reads are already served from the nearest replica — there's nothing to configure there.
-`vercel.json` used to be `{}`, so functions ran in Vercel's default **`iad1` (Virginia)** and every single round trip crossed the continent. `x-vercel-id: sfo1::iad1::…` on a production response is the tell: request enters at the SF edge, function executes in Virginia.
-
-Measured from SF against production, before any of this: **`/api/goals` took 1.2–1.95s**, not the 335ms the same code showed on localhost. A route doing two round trips (`/api/vacation`) took ~190ms from `iad1` against ~20ms from the west coast, which puts a cross-country round trip at **~65ms against ~9ms**. Round-trip *count* and round-trip *cost* were both multiplying, which is why localhost understated the problem by roughly 4×.
-
-Single-region pinning works on the **hobby** plan (verified on a preview deployment; multi-region needs Pro/Enterprise). If `vercel.json` ever needs to drop it, the equivalent is Project Settings → Functions → Region. **Never let this drift back to a default** — and if the Redis database is ever moved or recreated, re-check its region and move this with it.
-
-### Cold vs warm, and why there's no data cache
-
-The tracker page renders in **46ms warm** (20 commands, 43ms of it Redis, ~4 sequential waves at ~10ms each). The first request after a cold start measures ~190ms instead, and the difference is almost entirely the TLS handshake to Upstash plus JIT — not extra queries. So *cold start*, not query volume, is what's left.
-
-This is why there is **no cross-request cache** and shouldn't be one. It could save at most those 46ms, and it would pay for them with staleness in whether a habit is checked in — the single fact the app exists to record and the one the accountability partner is looking at. The cache that mattered is the request-scoped one in `lib/request-cache.ts`, which removed 42% of the reads with no staleness window at all because it cannot outlive the request.
-
-If cold starts ever do need attacking, the lever is the Edge runtime (near-zero boot, and `@upstash/redis` is fetch-based so it works there) — but that constrains what the routes can import (`app/api/coach` uses the Anthropic SDK), so measure first rather than assuming.
+If cold starts ever need attacking, the lever is the Edge runtime (near-zero boot; `@upstash/redis` is fetch-based) — but that constrains what routes can import (`app/api/coach` uses the Anthropic SDK), so measure first.
 
 ## Tests
 
-Vitest, in `test/`. `.github/workflows/ci.yml` runs lint → typecheck → test → build on every push to `main` and every PR.
+Vitest, in `test/`. CI runs lint → typecheck → test → build on every push to `main` and every PR.
 
-**No live Redis.** `test/setup.ts` mocks `@upstash/redis` so every `new Redis(...)` returns the shared in-memory `FakeRedis` from `test/redis-fake.ts`. That fake implements exactly the command surface `lib/kv.ts` uses and preserves the Upstash semantics `kv.ts` depends on (`mget` returns `null` for missing keys, lists are newest-first via `lpush`, and `set` with `nx` returns `null` rather than `"OK"` when the key exists — the nudge ladder's no-double-send guarantee is exactly that return value, so a fake that always said `"OK"` would make a broken dispatch look correct). Add a command to `kv.ts` and the fake needs it too — better a loud failure than a silent `undefined`.
+**No live Redis.** `test/setup.ts` mocks `@upstash/redis` so every `new Redis(...)` returns the shared in-memory `FakeRedis` from `test/redis-fake.ts`. It implements exactly the surface `lib/kv.ts` uses and preserves the semantics `kv.ts` depends on: `mget` returns `null` for missing keys, lists are newest-first via `lpush`, and **`set` with `nx` returns `null` rather than `"OK"` when the key exists** — the ladder's no-double-send guarantee *is* that return value, so a fake that always said `"OK"` would make a broken dispatch look correct. Add a command to `kv.ts` and the fake needs it too.
 
-The fake also **records every command it is asked to run**, in `fakeRedis.calls` (as `"<command> <keys>"`), with `countCommands(fn)` as the convenience wrapper.
-Round-trip count is the thing that decides how a page feels against a REST Redis, and it's a property no assertion on returned data can catch — an N+1 returns exactly the right answer, just slowly, which is how `GET /api/goals` sat at 135 round trips for as long as it did.
-`pipeline().exec()` is recorded as the single round trip it is, keeping the keys it batched, so a test can assert both how many commands went out and what was batched.
+The fake **records every command** in `fakeRedis.calls` (as `"<command> <keys>"`), with `countCommands(fn)` as the wrapper. Round-trip count is what decides how a page feels against a REST Redis and is a property no assertion on returned data can catch — an N+1 returns the right answer, just slowly. `pipeline().exec()` records as the single round trip it is, keeping the keys it batched.
 
-**Time is pinned.** The data-layer suites `vi.setSystemTime` to Wed 26 Aug 2026. That date is deliberate: a Wednesday leaves 5 days in the week, which is the only way to construct both the "still winnable" and "already out of reach" weekly-goal cases. Never write a test that depends on the day it happens to run — an earlier throwaway script did, and its "out of reach" case was unconstructible on Mondays, so it failed every Monday for no real reason.
+**Time is pinned** to Wed 26 Aug 2026 in the data-layer suites. The day matters: a Wednesday leaves 5 days in the week, which is the only way to construct both the "still winnable" and "already out of reach" weekly cases. Never write a test that depends on the day it happens to run.
 
-Suites: `week-keys` (ISO week numbering, incl. a 400-day sweep across both year boundaries and a guard pinning already-stored note keys to their labels), `reflection` (every branch of `getReflectionPrompt`, incl. the lookback window - a whole run of misses in one prompt, an older backlog raised but not `required`, and the days it must never ask about: vacation, already-reflected, and before the habit's first check-in - plus which day a weekly prompt names: the missed nudge day ahead of the week's last open one, never today, never a paused day, and `null` when no day of the week has closed yet - plus what `saveReflection` files where, and the split between that and what the history grid shows: a run of misses collapsing onto the single day it was answered, and a reflection filed just outside the 91-day window still surfacing on the day inside it that it was written), `graduation` (eligibility, freeze/restore, the untracked guarantees, and the history window ending at `graduatedAt` - including the months-later case that used to read 0%), `nudges` (the pure `getPendingNudges` predicate, plus the escalation schedule: `nudgeSlots`, `dueSlotIndices`, `habitCallStart`, `nextCallTime`, `callScript`, and the overnight maths - `ladderEnd`/`crossesMidnight`/`nudgeAnchors`, including that a late habit's ladder stays inside `CARRYOVER_WINDOW_MIN` and that times keep counting up past 1440 rather than wrapping), `snooze` (the reply grammar: both commands, which clock time tells them apart, the soonest future reading of an ambiguous hour, and both confirmations - plus `snoozeHold`'s clamp, including the carryover frame shift and the too-late case that writes nothing), `phone` (E.164 canonicalization, incl. the legacy-format inbound match), `nudge-ladder` (the dispatch route end to end), `nudge-inbound` (the Sendblue reply webhook), `notes` (the four-section note round-trip, blank-bullet stripping, and the pre-sections prose surviving an edit), `target-history` (what `recordTargetChange` logs - and what it declines to log - plus the step-line maths in `buildTargetTrend`), `batching` (the round-trip counts of the page-load reads), `tabs` (nav visibility - the pure filter, and that an empty hidden set stores as absent so it can't read back as "hide everything").
+| Suite | Covers |
+|---|---|
+| `week-keys` | ISO week numbering, incl. a 400-day sweep across both year boundaries |
+| `reflection` | every branch of `getReflectionPrompt` — the lookback window, the days it must never ask about, which day a weekly prompt names, and what `saveReflection` files where vs what the grid shows |
+| `graduation` | eligibility, freeze/restore, the untracked guarantees, the history window ending at `graduatedAt` |
+| `nudges` | the `getPendingNudges` predicate and the pure schedule: `nudgeSlots`, `dueSlotIndices`, `habitCallStart`, `nextCallTime`, `callScript`, and the overnight maths |
+| `snooze` | the reply grammar, both confirmations, and `snoozeHold`'s clamp |
+| `phone` | E.164 canonicalization, incl. the legacy-format inbound match |
+| `nudge-ladder` | the dispatch route end to end (below) |
+| `nudge-inbound` | the Sendblue reply webhook — secret gate, both commands, scope, clamp messaging |
+| `notes` | four-section round-trip, pre-sections prose surviving an edit, the last-week ceiling, newest-three pagination |
+| `target-history` | what `recordTargetChange` logs and declines to log, `buildTargetTrend`, and `targetAsOf` scoring a week against the target it had |
+| `vacation` | the plans the API refuses, the `goalIds` derived from zeros, and what a planned week does to scoring and nudging |
+| `meeting-notes` | the Fathom scrape and the two notes it writes (summarizer mocked) |
+| `batching` | round-trip counts of the page-load reads (below) |
+| `tabs` | nav visibility, and an empty hidden set storing as absent |
 
-`nudge-ladder` is the one suite that drives an API route rather than the data layer.
-It replays a whole PST day at the real cron cadence (a POST every 10 simulated minutes) with Sendblue and Twilio mocked, and asserts the exact transcript of what went out and when — for its 18:00 habit, `18:00 text`, `19:20 text`, `20:40 text`, `20:50 call`, `21:00 call`, `21:10 call`, `21:40 partner text`.
-The run goes round the clock to `26:00`, and ticks past midnight are logged as `24:10` rather than `00:10` so a transcript sorts and reads in ladder order — the same reason `lib/nudges.ts` counts in minutes.
-It also pins the per-habit independence directly: two habits on different clocks run two separate ladders (one being called about while the other is still sending its first text), habits due on the same tick merge into one call, and a habit configured past `DAY_END` gets a full three-text ladder rather than the single truncated reminder it used to.
-The clock is the input under test, so ticks set the system time and let the route read it, rather than passing a time in.
-The Twilio mock is a knob for what the *called party* did (`reached`/`missed`/`pending`) rather than a fake of Twilio's HTTP shape, since that outcome is the only thing driving the retry loop.
-The escape hatches are pinned there: a mute must remove everything remaining for that habit including its share of the partner alert, answering the phone must do the same for the habits that call named, a snooze must skip the reminders that fall during the hold and then resume the ladder, and replaying the same tick ten times must send exactly once.
-A pause is driven through the real inbound webhook rather than by seeding the mute key, since that key is the half the webhook writes: `pause 1` at 18:10 must end that habit's day outright, partner alert included, while a second habit on the same clock runs its full ladder and is alerted about alone.
-The two snooze-clamp cases are driven through the real inbound webhook rather than by seeding the hold key, because the clamp only exists in the webhook and the tick taken together: `1 until 1am` must come back to 23:00 for an 18:00 habit and still alert the partner at 23:50, and must stand as asked for a 23:30 habit whose ladder runs that late anyway.
-The overnight cases have their own block — that a 23:30 habit finishes its ladder at 01:10; that a check-in at 23:55 stops the 00:20 call (the one that only works because the ladder is scored against its own nudge day, not the fresh calendar day); that a mute written after midnight under *yesterday's* key is honoured; and, in the other direction, that an ordinary 18:00 habit is **not** reopened after midnight and doesn't owe a second partner alert.
-`nudge-inbound` covers the webhook itself — that the secret gate rejects unverified requests without recording anything, that "ok" changes nothing, that `pause` mutes every habit nudging at that moment and `pause 1` only the one it names, that neither reaches a habit whose nudge time is still hours away, that `pause 1 until 20:30` is read as the snooze it is, that `1 2 until 20:30` snoozes those habits and leaves one whose nudge time is still hours away alone, that one reply can give two habits two times, that an empty message does nothing, that a hold past the end of the nudge day is written as the clamped time and explained as such, that a reply arriving after the cap writes no hold, and that the confirmation names what it snoozed. `snooze` covers the reply grammar on its own.
-A `pending` outcome must not consume an attempt — otherwise a slow-to-connect call would silently eat the retries meant to follow it.
+**`nudge-ladder`** is the one suite that drives an API route rather than the data layer. It replays a PST day at the real cron cadence (a POST every 10 simulated minutes) with Sendblue and Twilio mocked, asserting the exact transcript of what went out and when. The clock is the input under test, so ticks set the system time and let the route read it. Ticks past midnight are logged as `24:10` rather than `00:10`, so a transcript sorts in ladder order — the same reason `lib/nudges.ts` counts in minutes. The Twilio mock is a knob for what the *called party* did (`reached`/`missed`/`pending`), since that outcome is the only thing driving the retry loop.
+It pins per-habit independence (two clocks, two ladders; same-tick habits merging into one call; a habit past `DAY_END` still getting three texts), every escape hatch (a mute removing everything remaining including the partner alert; answering the phone doing the same; a snooze skipping reminders during the hold and resuming after; ten replays of one tick sending exactly once), and the overnight cases (a 23:30 ladder finishing at 01:10; a 23:55 check-in stopping the 00:20 call; a mute written after midnight under yesterday's key being honoured; an ordinary 18:00 habit **not** reopening after midnight). Pauses and snooze clamps are driven through the real inbound webhook rather than by seeding keys, since the webhook is the half that writes them.
 
-`batching` is the regression guard on the work described in [Latency instrumentation](#latency-instrumentation).
-It asserts that `getGoalStatuses` doesn't scale its round trips with the habit count, that `settings:vacation` is read exactly once, that the history-length and target-history fan-outs each go out as one pipeline, that a 40-day streak costs under ten commands rather than 41, and that the check-in keys the history grid reads are never re-read by the streak walk.
-The bounds are deliberately a little loose - they exist to catch a fan-out being reintroduced, not to pin a number a benign refactor would have to churn - but not vacuous: the real figures are 16 commands for 12 habits (against a bound of 25) and 7 for a 40-day streak (against 10).
-Two correctness tests sit alongside them, because a read cache's failure modes are staleness: a check-in written earlier in the same request must be visible to a later read, and nothing may leak between requests.
-**Every test in it opens a scope with `runWithCache`**, because that's what a real request does — `withPerf` wraps every route handler and `measure` wraps the server components. Without a scope the cache is a passthrough and the counts would be the un-deduped ones, so a test that forgets it measures the wrong thing.
+**`batching`** guards the latency work: that `getGoalStatuses` doesn't scale round trips with habit count, that `settings:vacation` is read exactly once, that the history-length and target-history fan-outs each go out as one pipeline, that a 40-day streak costs under ten commands, and that the grid's check-in keys aren't re-read by the streak walk. Bounds are a little loose — they catch a reintroduced fan-out, not a benign refactor. Two correctness tests sit alongside, because a read cache's failure mode is staleness: a check-in written earlier in the same request must be visible later, and nothing may leak between requests. **Every test opens a scope with `runWithCache`**, because that's what a real request does; without one the cache is a passthrough and the counts measure the wrong thing.
 
-`scripts/seed-reflection-demo.mts` is *not* a test — it seeds a disposable `reflectdemo` user against live Redis for manual browser QA of the modals, the trophy shelf and the graduated cards in the history tab, which unit tests can't cover. Its `gradold` habit graduated 120 days ago deliberately - a graduated card only misbehaves once graduation falls outside the 91-day grid, so a fixture graduated last week proves nothing. `npx tsx --env-file=.env.local scripts/seed-reflection-demo.mts [clean]`.
-
-## Goals currently tracked (as of June 2026)
-
-**Alan:** Gym-split: HIIT (1x/week), Resistance training (1x/week) · Piano Session (3x/week) · Eye ointment (6x/week) · Stretch (2x/week) · Protein drink (1x/daily) · 7+ hr sleep · Salad · Emotional Check-in (mood/daily)
-
-**Rochisha:** Empty — she sets her own goals from scratch at `/rochisha`.
+`scripts/seed-reflection-demo.mts` is **not** a test — it seeds a disposable `reflectdemo` user against live Redis for manual browser QA of the modals, trophy shelf and graduated cards. Its `gradold` habit graduated 120 days ago deliberately: a graduated card only misbehaves once graduation falls outside the 91-day grid. `npx tsx --env-file=.env.local scripts/seed-reflection-demo.mts [clean]`.
