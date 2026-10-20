@@ -25,6 +25,7 @@ import type { Goal, GoalStatus, ReflectionPrompt } from "@/lib/types";
 import type { VacationWindow } from "@/lib/kv";
 import { habitCallStart, nudgeSlots, MINUTES_PER_DAY } from "@/lib/nudges";
 import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
+import { VacationPlanner } from "@/app/components/VacationPlanner";
 import { timedFetch, logFirstData } from "@/lib/client-perf";
 
 const PST = "America/Los_Angeles";
@@ -38,10 +39,15 @@ function getTodayDateStr(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: PST }).format(new Date());
 }
 
-function addDaysToDateStr(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + days, 12));
-  return [dt.getUTCFullYear(), String(dt.getUTCMonth() + 1).padStart(2, "0"), String(dt.getUTCDate()).padStart(2, "0")].join("-");
+/**
+ * The habits a vacation plan keeps running, i.e. planned above zero in some week it covers.
+ * They're the half of a planned trip the "N paused" count says nothing about.
+ */
+function keptOnVacation(window: VacationWindow, goals: GoalStatus[]): GoalStatus[] {
+  if (!window.plan) return [];
+  return goals.filter((g) =>
+    window.plan!.some((week) => (week.goals[g.id]?.targetCount ?? 0) > 0)
+  );
 }
 
 function isHandled(g: GoalStatus): boolean {
@@ -885,9 +891,6 @@ export function HomePage({
     initialVacation?.upcoming ?? null
   );
   const [vacationFormOpen, setVacationFormOpen] = useState(false);
-  const [vacationStartDate, setVacationStartDate] = useState(() => getTodayDateStr());
-  const [vacationEndDate, setVacationEndDate] = useState(() => addDaysToDateStr(getTodayDateStr(), 7));
-  const [vacationGoalIds, setVacationGoalIds] = useState<string[]>([]);
 
   const isGoalPaused = (goalId: string) => !!vacation?.goalIds.includes(goalId);
 
@@ -1095,41 +1098,7 @@ export function HomePage({
     }
   };
 
-  const toggleVacationForm = () => {
-    if (!vacationFormOpen) {
-      setVacationGoalIds(goals.map((g) => g.id));
-      setVacationStartDate(getTodayDateStr());
-      setVacationEndDate(addDaysToDateStr(getTodayDateStr(), 7));
-    }
-    setVacationFormOpen((v) => !v);
-  };
-
-  const toggleVacationGoal = (goalId: string) => {
-    setVacationGoalIds((prev) =>
-      prev.includes(goalId) ? prev.filter((id) => id !== goalId) : [...prev, goalId]
-    );
-  };
-
-  const handleStartVacation = async () => {
-    if (vacationGoalIds.length === 0 || !vacationStartDate || !vacationEndDate) return;
-    setLoading(true);
-    try {
-      const res = await timedFetch(`/api/vacation${q}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startDate: vacationStartDate, endDate: vacationEndDate, goalIds: vacationGoalIds }),
-      });
-      if (!res.ok) throw new Error("Failed to start vacation");
-      const data = await res.json();
-      setVacation(data.active);
-      setUpcomingVacation(data.upcoming);
-      setVacationFormOpen(false);
-    } catch {
-      setError("Couldn't start vacation. Try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const toggleVacationForm = () => setVacationFormOpen((v) => !v);
 
   const handleEndVacation = async () => {
     setLoading(true);
@@ -1227,61 +1196,21 @@ export function HomePage({
         </div>
       </div>
 
-      {/* Vacation start form */}
+      {/* Vacation planner */}
       {vacationFormOpen && !vacation && !upcomingVacation && (
-        <div className="mb-6 rounded-2xl border border-gray-200 bg-white shadow-sm p-4 space-y-3">
-          <p className="text-sm text-gray-700">Pause nudges and protect streaks for selected habits while you’re away.</p>
-          <div className="space-y-1.5 max-h-48 overflow-y-auto">
-            {sortedGoals.map((g) => (
-              <label key={g.id} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={vacationGoalIds.includes(g.id)}
-                  onChange={() => toggleVacationGoal(g.id)}
-                  className="w-4 h-4 rounded border-gray-300 text-gray-900 focus:ring-gray-300"
-                />
-                <span>{g.emoji} {g.name}</span>
-              </label>
-            ))}
-          </div>
-          <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-            <span className="text-sm text-gray-500">From:</span>
-            <input
-              type="date"
-              min={getTodayDateStr()}
-              value={vacationStartDate}
-              onChange={(e) => {
-                const next = e.target.value;
-                setVacationStartDate(next);
-                if (vacationEndDate < next) setVacationEndDate(next);
-              }}
-              className="border border-gray-200 rounded-xl px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-300"
-            />
-            <span className="text-sm text-gray-500">Until:</span>
-            <input
-              type="date"
-              min={vacationStartDate}
-              value={vacationEndDate}
-              onChange={(e) => setVacationEndDate(e.target.value)}
-              className="border border-gray-200 rounded-xl px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-300"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleStartVacation}
-              disabled={loading || vacationGoalIds.length === 0 || !vacationStartDate || !vacationEndDate}
-              className="ml-auto bg-gray-900 text-white rounded-xl px-4 py-1.5 text-sm font-medium hover:bg-gray-700 disabled:opacity-50 transition-colors"
-            >
-              {vacationStartDate > getTodayDateStr() ? "Schedule" : "Start"}
-            </button>
-            <button
-              onClick={() => setVacationFormOpen(false)}
-              className="text-xs text-gray-400 hover:text-gray-600 underline"
-            >
-              cancel
-            </button>
-          </div>
-        </div>
+        <VacationPlanner
+          goals={sortedGoals}
+          userId={userId}
+          today={getTodayDateStr()}
+          onSaved={(data) => {
+            const { active, upcoming } = data as { active: VacationWindow | null; upcoming: VacationWindow | null };
+            setVacation(active);
+            setUpcomingVacation(upcoming);
+            setVacationFormOpen(false);
+            fetchGoals(); // a planned week can change what's expected today
+          }}
+          onCancel={() => setVacationFormOpen(false)}
+        />
       )}
 
       {/* Vacation active banner */}
@@ -1298,6 +1227,13 @@ export function HomePage({
             <p className="text-xs text-sky-600 mt-0.5">
               {goals.filter((g) => vacation.goalIds.includes(g.id)).map((g) => g.emoji).join(" ") || "Nudges paused. Streaks are safe."}
             </p>
+            {/* The habits the plan keeps running, which the "paused" count above doesn't cover -
+                they're still scored, just against the smaller number chosen for the week. */}
+            {keptOnVacation(vacation, goals).length > 0 && (
+              <p className="text-xs text-sky-500 mt-0.5">
+                {keptOnVacation(vacation, goals).map((g) => g.emoji).join(" ")} still running
+              </p>
+            )}
           </div>
           <button
             onClick={handleEndVacation}
@@ -1321,6 +1257,11 @@ export function HomePage({
             <p className="text-xs text-sky-600 mt-0.5">
               {goals.filter((g) => upcomingVacation.goalIds.includes(g.id)).map((g) => g.emoji).join(" ")}
             </p>
+            {keptOnVacation(upcomingVacation, goals).length > 0 && (
+              <p className="text-xs text-sky-500 mt-0.5">
+                {keptOnVacation(upcomingVacation, goals).map((g) => g.emoji).join(" ")} still running
+              </p>
+            )}
           </div>
           <button
             onClick={handleEndVacation}

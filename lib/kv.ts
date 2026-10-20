@@ -1,8 +1,8 @@
 import { Redis } from "@upstash/redis";
 import type { Goal, GoalStatus, NudgeCandidate, CheckInRecord, WeeklyNote, MoodEntry, ReflectionPrompt, TargetChange } from "./types";
-import { sameTarget } from "./target-history";
+import { sameTarget, targetAsOf, type TargetSpec } from "./target-history";
 import { CARRYOVER_WINDOW_MIN, toMinutes } from "./nudges";
-import { addDaysToDateStr, dayOfWeek } from "./dates";
+import { addDaysToDateStr, dayOfWeek, weekKeyForDate, weeksInRange } from "./dates";
 
 export { addDaysToDateStr };
 import { HIDEABLE_TABS } from "./tabs";
@@ -69,14 +69,96 @@ export async function setRemindHour(hour: number, userId?: string): Promise<void
 // --- Vacation mode ---
 // Windows are kept forever (not just the active one) so streak walks that later pass back
 // over an old vacation window still know to treat those days as neutral, not missed.
+/**
+ * What one habit is being asked for during one week of a vacation.
+ *
+ * `targetCount` is in the habit's own unit - times that week for a weekly habit, times a day for
+ * a daily one - and **0 is the pause**: the habit is not expected at all that week, its days are
+ * neutral in the grid and in every streak walk, and it sends nothing. A non-zero target is a
+ * habit the user has decided to keep going at some level while away, so it is scored and nudged
+ * like any other week, just against this number.
+ *
+ * The nudge fields override the habit's own for the week, which is the other half of planning a
+ * vacation deliberately: a 21:00 reminder is for an ordinary evening at home, not for one three
+ * time zones away.
+ */
+export interface VacationGoalPlan {
+  targetCount: number;
+  nudgeTime?: string;      // "HH:MM" PST
+  nudgeDays?: number[];    // 0=Sun…6=Sat, weekly habits
+  nudgeEnabled?: boolean;  // false silences the habit for the week without excusing it
+}
+
+/** One ISO week of a vacation, with an entry for every habit tracked when it was planned. */
+export interface VacationWeekPlan {
+  week: string; // "2026-W43"
+  goals: Record<string, VacationGoalPlan>;
+}
+
 export interface VacationWindow {
   startDate: string; // YYYY-MM-DD PST, inclusive
   endDate: string; // YYYY-MM-DD PST, inclusive
-  goalIds: string[]; // only these habits are paused by this window
+  // The habits this window pauses outright - every habit planned at 0 for at least one of its
+  // weeks. Derived from `plan` on write, and kept as a field because it's what the banners count
+  // and what windows written before planning existed carry instead of a plan.
+  goalIds: string[];
+  // One entry per ISO week the window touches. Absent on windows written before the planner,
+  // which is why every reader falls back to `goalIds` rather than treating a missing plan as
+  // "nothing was paused".
+  plan?: VacationWeekPlan[];
 }
 
+// A window with no plan pauses the habits it lists outright, which is the same thing as planning
+// them at 0 for every week it covers. Collapsing the two here is what lets the readers below -
+// the vacation grid colour, the target resolver and the nudge overrides - each be one lookup.
+const PAUSED_FOR_WEEK: VacationGoalPlan = { targetCount: 0 };
+
+/** What a vacation says about this habit on this day, or null if no vacation covers it. */
+function vacationPlanFor(
+  goalId: string,
+  dateStr: string,
+  windows: VacationWindow[]
+): VacationGoalPlan | null {
+  for (const w of windows) {
+    if (dateStr < w.startDate || dateStr > w.endDate) continue;
+    // A habit created after the plan was written has no entry in it, so it falls back to the
+    // window's own list rather than being silently treated as planned-and-kept.
+    const entry = w.plan?.find((p) => p.week === weekKeyForDate(dateStr))?.goals[goalId];
+    if (entry) return entry;
+    if (w.goalIds.includes(goalId)) return PAUSED_FOR_WEEK;
+  }
+  return null;
+}
+
+/**
+ * Whether this day is excused for this habit - neutral in the grid, and neither counted nor
+ * broken by any streak walk. A vacation week the user chose to keep the habit running in is
+ * *not* excused: they planned to do it, so it's scored.
+ */
 function isVacationDay(dateStr: string, windows: VacationWindow[], goalId: string): boolean {
-  return windows.some((w) => w.goalIds.includes(goalId) && w.startDate <= dateStr && dateStr <= w.endDate);
+  return vacationPlanFor(goalId, dateStr, windows)?.targetCount === 0;
+}
+
+/**
+ * The target this habit was being held to on this day - the one number every past period is
+ * judged against. Two layers, in order:
+ *   1. a vacation week's plan, which is the user deciding in advance what this week would ask
+ *      for (0 = not at all);
+ *   2. the target history, i.e. what the habit's target was at the time (`targetAsOf`).
+ *
+ * The plan only ever moves the count, never the shape: a week is not the place to turn a daily
+ * habit into a weekly one, and the streak walks read the frequency to know whether they're still
+ * looking at the same habit.
+ */
+function targetOn(
+  goal: Goal,
+  changes: TargetChange[],
+  dateStr: string,
+  windows: VacationWindow[]
+): TargetSpec {
+  const base = targetAsOf(changes, dateStr, goal);
+  const planned = vacationPlanFor(goal.id, dateStr, windows);
+  return planned ? { frequency: base.frequency, targetCount: planned.targetCount } : base;
 }
 
 // Read 26 times in one `GET /api/goals` before the cache existed - once per goal by each of
@@ -103,13 +185,32 @@ export async function getUpcomingVacation(userId?: string): Promise<VacationWind
   return windows.filter((w) => w.startDate > today).sort((a, b) => a.startDate.localeCompare(b.startDate))[0] ?? null;
 }
 
-export async function startVacation(startDate: string, endDate: string, goalIds: string[], userId?: string): Promise<VacationWindow> {
+/**
+ * Schedule (or start) a vacation from a week-by-week plan.
+ *
+ * `goalIds` isn't passed in any more - it's whichever habits the plan puts at 0 in at least one
+ * of its weeks. Deriving it rather than taking it is what keeps "paused" a single fact: the
+ * banners count that list, and windows written before the planner existed carry only that list.
+ */
+export async function startVacation(
+  startDate: string,
+  endDate: string,
+  plan: VacationWeekPlan[],
+  userId?: string
+): Promise<VacationWindow> {
   const today = getTodayDate();
   const windows = await getVacationWindows(userId);
   // Scheduling fresh always replaces any window that hasn't fully ended yet (active or
   // upcoming) — keep only windows that already ended.
   const past = windows.filter((w) => w.endDate < today);
-  const window: VacationWindow = { startDate, endDate, goalIds };
+  const goalIds = Array.from(
+    new Set(
+      plan.flatMap((week) =>
+        Object.entries(week.goals).filter(([, g]) => g.targetCount === 0).map(([id]) => id)
+      )
+    )
+  );
+  const window: VacationWindow = { startDate, endDate, goalIds, plan };
   past.push(window);
   await kv.set(k(userId, "settings:vacation"), past);
   invalidate(k(userId, "settings:vacation"));
@@ -334,31 +435,15 @@ export function getPstTimeHHMM(): string {
   return `${String(Number(hour) % 24).padStart(2, "0")}:${String(Number(minute)).padStart(2, "0")}`;
 }
 
-// ISO-8601 week key: weeks run Monday–Sunday, and week 1 is the one containing Jan 4. Note the
-// year is the *ISO* year, which can differ from the calendar year in late Dec / early Jan -
-// Mon Dec 29 2025 is "2026-W01", because it starts the week that contains Jan 4 2026.
+// The ISO-8601 week a date falls in, defaulting to today in PST. The arithmetic itself lives in
+// lib/dates.ts, because the notes page and the vacation planner both need it in the browser and
+// a second copy of it drifted out of step with the stored notes once already.
 //
-// This must agree with getWeekDatesForDate (which weekly goals are scored over) and with
-// getWeekLabel (which renders a key back into "Week of <Monday>"). Both are already Monday-based
-// and anchored on Jan 4, so ISO is the convention that makes all three line up.
+// It must agree with getWeekDatesForDate (which weekly goals are scored over) and with
+// getWeekLabel (which renders a key back into "Week of <Monday>"). Both are Monday-based and
+// anchored on Jan 4, so ISO is the convention that makes all three line up.
 export function getWeekKey(date?: string): string {
-  const pstDate = date
-    ? date
-    : new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
-  const [y, m, d] = pstDate.split("-").map(Number);
-
-  // Step to the Thursday of this date's week: the ISO year/week are whichever ones own that
-  // Thursday, which is what makes the year-boundary cases fall out for free.
-  const thursday = new Date(Date.UTC(y, m - 1, d));
-  thursday.setUTCDate(thursday.getUTCDate() - ((thursday.getUTCDay() + 6) % 7) + 3);
-  const isoYear = thursday.getUTCFullYear();
-
-  // Thursday of ISO week 1 - the week containing Jan 4.
-  const week1Thursday = new Date(Date.UTC(isoYear, 0, 4));
-  week1Thursday.setUTCDate(week1Thursday.getUTCDate() - ((week1Thursday.getUTCDay() + 6) % 7) + 3);
-
-  const week = Math.round((thursday.getTime() - week1Thursday.getTime()) / (7 * 86400000)) + 1;
-  return `${isoYear}-W${String(week).padStart(2, "0")}`;
+  return weekKeyForDate(date ?? getTodayDate());
 }
 
 // The pre-ISO week numbering this app used until Aug 2026: weeks were phased off whatever
@@ -466,20 +551,30 @@ export async function getCompletedThisPeriod(goal: Goal, userId?: string, date?:
  * paused by a vacation window that began at midnight.
  */
 export async function getNudgeCandidates(date: string, userId?: string): Promise<NudgeCandidate[]> {
-  const [goals, vacation] = await Promise.all([
-    getGoals(userId),
-    getActiveVacation(userId, date),
-  ]);
-  const pausedIds = new Set(vacation?.goalIds ?? []);
+  const [goals, windows] = await Promise.all([getGoals(userId), getVacationWindows(userId)]);
+  // A vacation week can move a habit's reminder time, change which days it nudges on, silence it
+  // for the week, or drop it entirely (target 0). Applying all of that here, to the candidate
+  // the ladder is built from, means nothing downstream - the pending predicate, the slot maths,
+  // the call script - has to know a vacation is on.
   return Promise.all(
     goals
-      .filter((g) => !pausedIds.has(g.id) && !isGraduated(g))
+      .filter((g) => !isGraduated(g) && !isVacationDay(date, windows, g.id))
       .map(async (goal) => {
+        const planned = vacationPlanFor(goal.id, date, windows);
+        const effective: Goal = planned
+          ? {
+              ...goal,
+              targetCount: planned.targetCount,
+              ...(planned.nudgeTime ? { nudgeTime: planned.nudgeTime } : {}),
+              ...(planned.nudgeDays ? { nudgeDays: planned.nudgeDays } : {}),
+              ...(planned.nudgeEnabled === false ? { nudgeEnabled: false } : {}),
+            }
+          : goal;
         const [completedThisPeriod, todayCount] = await Promise.all([
           getCompletedThisPeriod(goal, userId, date),
           getCheckInsForPeriod(goal.id, date, userId),
         ]);
-        return { ...goal, completedThisPeriod, todayCount };
+        return { ...effective, completedThisPeriod, todayCount };
       })
   );
 }
@@ -654,7 +749,14 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
   // waiting for one. Its readers are the streak walks two waves later, and the request cache
   // hands them this promise.
   const [goals] = await Promise.all([getGoals(userId), getVacationWindows(userId)]);
-  await Promise.all([primeHistoryLengths(goals, userId), primeDayKeys(goals, userId)]);
+  // Target history joins the priming wave now that the streak walks and the reflection prompt
+  // all score past periods against it - one pipeline for every habit, rather than an `lrange`
+  // each from inside the per-goal fan-out below.
+  await Promise.all([
+    primeHistoryLengths(goals, userId),
+    primeDayKeys(goals, userId),
+    primeTargetHistories(goals, userId),
+  ]);
   return Promise.all(
     goals.map(async (goal) => {
       // A graduated habit isn't tracked any more, so there's nothing to recompute - its run was
@@ -876,13 +978,21 @@ async function buildHistory(
 ): Promise<{ period: string; count: number; done: boolean; vacation: boolean }[]> {
   const labels = goalHistoryLabels(goal, periods);
 
-  const [counts, vacationWindows] = await Promise.all([
+  // Each day is judged against the target that was in effect *that* day, same as the streak
+  // walk - otherwise raising a target repaints months of green grid gray, and the grid and the
+  // streak start telling the user two different stories about the same week.
+  const [counts, vacationWindows, changes] = await Promise.all([
     readCheckins(goal.id, labels, userId),
     getVacationWindows(userId),
+    getTargetHistory(goal.id, userId),
   ]);
   return labels.map((period) => {
     const count = counts.get(period) ?? 0;
-    const done = goal.frequency === "daily" ? count >= goal.targetCount : count >= 1;
+    const target = targetOn(goal, changes, period, vacationWindows);
+    // A target of 0 is a day nothing was asked for; it reads as vacation, not as done.
+    const done =
+      target.targetCount > 0 &&
+      (target.frequency === "daily" ? count >= target.targetCount : count >= 1);
     return {
       period,
       count,
@@ -974,7 +1084,10 @@ const STREAK_WEEK_BLOCKS = [4, 8, 16, 24];
 async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
   let streak = 0;
   const today = getTodayDate();
-  const vacationWindows = await getVacationWindows(userId);
+  const [vacationWindows, changes] = await Promise.all([
+    getVacationWindows(userId),
+    getTargetHistory(goal.id, userId),
+  ]);
 
   let start = 0;
   outer: for (const width of STREAK_DAY_BLOCKS) {
@@ -983,10 +1096,16 @@ async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
 
     for (let j = 0; j < block.length; j++) {
       const dateKey = block[j];
-      if ((counts.get(dateKey) ?? 0) >= goal.targetCount) {
+      const target = targetOn(goal, changes, dateKey, vacationWindows);
+      // Nothing was being asked for - a vacation day, or a week planned off. Neutral: there's no
+      // bar to clear, so it can neither extend the run nor end it.
+      if (target.targetCount === 0) continue;
+      // The habit was a weekly one back here, so there's no per-day bar to hold these days to.
+      // The run under the current shape started at the reshape; anything earned before it is
+      // what `streakOffset` carries forward, and only for the reshape we did that for by hand.
+      if (target.frequency !== "daily") break outer;
+      if ((counts.get(dateKey) ?? 0) >= target.targetCount) {
         streak++;
-      } else if (isVacationDay(dateKey, vacationWindows, goal.id)) {
-        continue; // neutral — doesn't break, doesn't count
       } else {
         // Don't break on today if not yet checked in
         if (start + j > 0) break outer;
@@ -1004,7 +1123,10 @@ async function getDailyStreak(goal: Goal, userId?: string): Promise<number> {
 async function getWeeklyStreak(goal: Goal, userId?: string): Promise<number> {
   let streak = 0;
   const todayStr = getTodayDate();
-  const vacationWindows = await getVacationWindows(userId);
+  const [vacationWindows, changes] = await Promise.all([
+    getVacationWindows(userId),
+    getTargetHistory(goal.id, userId),
+  ]);
 
   // Same block strategy as the daily walk: pull a block of weeks' worth of days in one read,
   // then judge each week from the cache. Ten weeks is 70 date keys - still one `mget`.
@@ -1023,9 +1145,17 @@ async function getWeeklyStreak(goal: Goal, userId?: string): Promise<number> {
       // Reads through the cache the block above just filled, so this costs no round trip -
       // except for the legacy weekly-key fallback, which only fires for a week with no days.
       const daysCompleted = await getWeeklyDaysCompleted(goal.id, weekDates, userId);
-      if (daysCompleted >= goal.targetCount) {
+      // The week is held to the target as it stood at the week's end - the last call the user
+      // made that applies to it. A week run at 3x stays a win after the habit moves to 5x.
+      const target = targetOn(goal, changes, weekDates[weekDates.length - 1], vacationWindows);
+      // Any paused day makes the week neutral. Under a vacation plan a week is all-or-nothing
+      // (one target for the whole week, 0 meaning off), but a window written before planning
+      // existed can cover a Wednesday to a Friday, and half a week is not a week to judge.
+      const paused = weekDates.some((wd) => isVacationDay(wd, vacationWindows, goal.id));
+      if (!paused && target.frequency !== "weekly") break outer; // was a daily habit then
+      if (!paused && daysCompleted >= target.targetCount) {
         streak++;
-      } else if (weekDates.some((wd) => isVacationDay(wd, vacationWindows, goal.id))) {
+      } else if (paused) {
         continue;
       } else {
         if (start + j > 0) break outer;
@@ -1247,6 +1377,22 @@ async function reflectionDateKeys(goal: Goal, userId?: string): Promise<string[]
 }
 
 /**
+ * How many days that week was asking for, as of the week's own end.
+ *
+ * A reshape falls back to the current target: a `targetCount` recorded while the habit was daily
+ * means times *per day*, which is not a number of days in a week and can't be compared with one.
+ */
+function weeklyTargetFor(
+  goal: Goal,
+  changes: TargetChange[],
+  weekDates: string[],
+  windows: VacationWindow[]
+): number {
+  const target = targetOn(goal, changes, weekDates[weekDates.length - 1], windows);
+  return target.frequency === "weekly" ? target.targetCount : goal.targetCount;
+}
+
+/**
  * Whether to ask for a reflection before this goal's next check-in - and why.
  *
  * Daily goals: every day is expected, so a day with no check-in is a real miss.
@@ -1305,8 +1451,9 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
 
   const today = getTodayDate();
   const weekDates = getWeekDatesForDate(today);
+  const changes = await getTargetHistory(goal.id, userId);
   const completed = await getWeeklyDaysCompleted(goal.id, weekDates, userId);
-  const target = Math.min(goal.targetCount, weekDates.filter((d) => !paused(d)).length);
+  const target = Math.min(weeklyTargetFor(goal, changes, weekDates, vacationWindows), weekDates.filter((d) => !paused(d)).length);
   const daysLeft = weekDates.filter((d) => d >= today && !paused(d)).length;
   const needed = target - completed;
   // The prompt fires at check-in, and that check-in counts: with exactly one day still needed
@@ -1327,7 +1474,10 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   // Nothing logged yet this week, so this is the first check-in since last week closed out.
   if (completed === 0) {
     const lastWeekDates = getWeekDatesForDate(addDaysToDateStr(today, -7));
-    const lastTarget = Math.min(goal.targetCount, lastWeekDates.filter((d) => !paused(d)).length);
+    const lastTarget = Math.min(
+      weeklyTargetFor(goal, changes, lastWeekDates, vacationWindows),
+      lastWeekDates.filter((d) => !paused(d)).length
+    );
     if (lastTarget === 0) return null;
     const lastCompleted = await getWeeklyDaysCompleted(goal.id, lastWeekDates, userId);
     if (lastCompleted < lastTarget) {
@@ -1469,6 +1619,15 @@ export function getCurrentWeekKey(): string {
   return getWeekKey();
 }
 
+// A note is written *about* a week that has already happened - it's the write-up of that week's
+// meeting - so last week is the latest one a note can be started for. Week keys sort
+// lexicographically (the week number is zero-padded and the year leads), so a plain string
+// comparison against this is enough to tell "too recent" from "fine".
+// The picker in NotesView offers the same ceiling; this is the half that enforces it.
+export function getLatestNoteWeekKey(): string {
+  return getWeekKey(addDaysToDateStr(getTodayDate(), -7));
+}
+
 export function getWeekLabel(weekKey?: string): string {
   // weekKey format: "2026-W13"
   const [year, weekStr] = (weekKey || getWeekKey()).split("-W");
@@ -1494,16 +1653,29 @@ export async function getWeeklyNote(weekKey: string, userId?: string): Promise<W
   return note;
 }
 
-export async function getAllWeeklyNotes(limit = 52, userId?: string): Promise<WeeklyNote[]> {
+/**
+ * The newest `limit` notes, plus how many exist in total so the page knows whether to offer more.
+ *
+ * The sort has to happen on the **keys**, before the limit is applied: `kv.keys` returns them in
+ * whatever order Redis felt like, so slicing first handed back an arbitrary subset rather than
+ * the newest ones. That was invisible while the only caller asked for 52 and nobody had 52 notes
+ * - a notes page that asks for 3 would have shown three weeks picked at random. Week keys sort
+ * lexicographically (zero-padded number, ISO year leading), so sorting the key strings is the
+ * same order as sorting the notes.
+ */
+export async function getAllWeeklyNotes(
+  limit = 52,
+  userId?: string
+): Promise<{ notes: WeeklyNote[]; total: number }> {
   const prefix = userId ? `${userId}:note:` : "note:";
-  const keys = (await kv.keys(`${prefix}*`)).slice(0, limit);
-  if (keys.length === 0) return [];
+  const all = (await kv.keys(`${prefix}*`)).sort((a, b) => b.localeCompare(a));
+  const keys = all.slice(0, limit);
+  if (keys.length === 0) return { notes: [], total: all.length };
 
   // One `mget` rather than a `get` per week - it was 24 sequential round trips for Alan.
   const notes = (await kv.mget<(WeeklyNote | null)[]>(...keys)).filter((n): n is WeeklyNote => !!n);
 
-  // Sort by week descending (newest first)
-  return notes.sort((a, b) => b.week.localeCompare(a.week));
+  return { notes: notes.sort((a, b) => b.week.localeCompare(a.week)), total: all.length };
 }
 
 export async function saveWeeklyNote(note: Omit<WeeklyNote, "updatedAt">, userId?: string): Promise<void> {

@@ -32,6 +32,38 @@ export function weeklyEquivalent(target: Pick<TargetChange, "frequency" | "targe
   return target.frequency === "daily" ? target.targetCount * 7 : target.targetCount;
 }
 
+/** A target on its own, with no date attached - what a habit was being asked for. */
+export type TargetSpec = Pick<TargetChange, "frequency" | "targetCount">;
+
+/**
+ * The target the habit was being held to on `date`.
+ *
+ * This is what makes a past period scorable against what was actually asked of the user at the
+ * time, rather than against whatever the target happens to be today. Raising a 3x/week habit to
+ * 5x used to retroactively turn every 3x and 4x week behind it into a miss, which wiped out a
+ * streak as the reward for aiming higher - the single thing that made streaks read as broken.
+ *
+ * `changes` must be in chronological order (`getTargetHistory` sorts them). Three cases:
+ *   - no records at all (a habit whose target has never moved): the current target, which is the
+ *     only one it has ever had.
+ *   - a date before the first record: that first record. It's either the habit's real start
+ *     (`created`) or the target it already had when we first noticed a change (`backfilled`) -
+ *     either way it's the best evidence for everything earlier, and the chart draws that run
+ *     open-ended for the same reason.
+ *   - otherwise the last record on or before the date. Several edits in one day collapse to the
+ *     last, since they're sorted by `at` within the day - and a `backfilled` record is written
+ *     just before the edit that revealed it, so the edit wins its own date.
+ */
+export function targetAsOf(changes: TargetChange[], date: string, current: TargetSpec): TargetSpec {
+  if (changes.length === 0) return current;
+  let answer = changes[0];
+  for (const change of changes) {
+    if (change.date > date) break;
+    answer = change;
+  }
+  return { frequency: answer.frequency, targetCount: answer.targetCount };
+}
+
 export function formatTarget(target: Pick<TargetChange, "frequency" | "targetCount">): string {
   return `${target.targetCount}x/${target.frequency === "daily" ? "day" : "week"}`;
 }

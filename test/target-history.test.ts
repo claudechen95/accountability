@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
-import { getTargetHistory, recordTargetChange } from "@/lib/kv";
+import { getGoalHistories, getStreak, getTargetHistory, recordTargetChange } from "@/lib/kv";
 import { POST, PATCH } from "@/app/api/goals/route";
 import {
   buildTargetTrend,
   formatTarget,
+  targetAsOf,
   targetLevels,
   weeklyEquivalent,
 } from "@/lib/target-history";
@@ -134,6 +135,124 @@ describe("goals route", () => {
     await PATCH(req("PATCH", { orderedIds: ["piano"] }));
 
     expect(await getTargetHistory("piano", U)).toHaveLength(1);
+  });
+});
+
+describe("targetAsOf", () => {
+  const current = { frequency: "weekly" as const, targetCount: 5 };
+
+  it("falls back to the current target for a habit that never changed", () => {
+    expect(targetAsOf([], "2026-01-01", current)).toEqual(current);
+  });
+
+  // The first record is the best evidence there is for everything before it - either the habit's
+  // real start or the target it already had when we first saw it move.
+  it("holds the first record back through time", () => {
+    const changes = [change({ date: "2026-06-01", targetCount: 2 })];
+    expect(targetAsOf(changes, "2026-01-01", current).targetCount).toBe(2);
+  });
+
+  it("steps to whichever target was in effect on the day", () => {
+    const changes = [
+      change({ date: "2026-06-01", at: 1, targetCount: 2 }),
+      change({ date: "2026-07-15", at: 2, targetCount: 3 }),
+      change({ date: "2026-08-20", at: 3, targetCount: 5 }),
+    ];
+    expect(targetAsOf(changes, "2026-07-14", current).targetCount).toBe(2);
+    expect(targetAsOf(changes, "2026-07-15", current).targetCount).toBe(3);
+    expect(targetAsOf(changes, "2026-08-19", current).targetCount).toBe(3);
+    expect(targetAsOf(changes, TODAY, current).targetCount).toBe(5);
+  });
+
+  // A backfilled record describes the run *before* the edit that revealed it, and shares that
+  // edit's date. The edit has to win its own day or the change would take effect a day late.
+  it("gives a day to the edit made on it, not to the backfilled target it replaced", () => {
+    const changes = [
+      change({ date: "2026-07-15", at: 1, targetCount: 2, origin: "backfilled" }),
+      change({ date: "2026-07-15", at: 2, targetCount: 5, origin: "edited" }),
+    ];
+    expect(targetAsOf(changes, "2026-07-14", current).targetCount).toBe(2);
+    expect(targetAsOf(changes, "2026-07-15", current).targetCount).toBe(5);
+  });
+
+  it("carries the frequency as well as the count", () => {
+    const changes = [change({ date: "2026-06-01", frequency: "weekly", targetCount: 6 })];
+    expect(targetAsOf(changes, "2026-06-02", { frequency: "daily", targetCount: 1 })).toEqual({
+      frequency: "weekly",
+      targetCount: 6,
+    });
+  });
+});
+
+// The behaviour the resolver exists for: a week is a win if it hit the target *that week*, and
+// raising the bar today can't reach back and take last month's wins away.
+describe("scoring past periods against the target of the day", () => {
+  /** Check the habit in on `days` days of each of the last `weeks` whole weeks. */
+  function seedWeeks(goalId: string, weeks: number, days: number) {
+    // Wed 26 Aug 2026 - the weeks before this one start on Mon 17 Aug, 10 Aug, ...
+    for (let w = 1; w <= weeks; w++) {
+      const monday = new Date(Date.UTC(2026, 7, 17 - (w - 1) * 7));
+      for (let d = 0; d < days; d++) {
+        const day = new Date(monday);
+        day.setUTCDate(monday.getUTCDate() + d);
+        fakeRedis.seed(`${U}:checkin:${goalId}:${day.toISOString().slice(0, 10)}`, 1);
+      }
+    }
+  }
+
+  function setGoals(...goals: Goal[]) {
+    fakeRedis.seed(`${U}:goals`, goals);
+  }
+
+  // Order doesn't matter: getTargetHistory sorts by (date, at), the same as it has to for a
+  // list that real writes only ever append to.
+  function seedTargetHistory(goalId: string, ...changes: TargetChange[]) {
+    for (const c of changes) fakeRedis.seedListEntry(`${U}:target-history:${goalId}`, c);
+  }
+
+  it("keeps a weekly streak earned while the target was lower", async () => {
+    const piano = goal({ frequency: "weekly", targetCount: 5 });
+    setGoals(piano);
+    seedWeeks("piano", 6, 2); // two days a week, every week
+    seedTargetHistory(
+      "piano",
+      change({ date: "2026-05-01", at: 1, targetCount: 2, origin: "created" }),
+      change({ date: TODAY, at: 2, targetCount: 5, origin: "edited" })
+    );
+
+    // Those weeks were run at 2x and hit 2x. Against today's 5x they would all be misses, which
+    // is the bug: aiming higher wiped out the run that justified aiming higher.
+    expect(await getStreak(piano, U)).toBe(6);
+  });
+
+  it("still breaks a weekly streak on a week that missed its own target", async () => {
+    const piano = goal({ frequency: "weekly", targetCount: 5 });
+    setGoals(piano);
+    seedWeeks("piano", 6, 2);
+    seedTargetHistory(
+      "piano",
+      change({ date: "2026-05-01", at: 1, targetCount: 2, origin: "created" }),
+      // Raised to 3x a fortnight ago, so the two most recent whole weeks owed 3 and got 2.
+      change({ date: "2026-08-12", at: 2, targetCount: 3, origin: "edited" })
+    );
+
+    expect(await getStreak(piano, U)).toBe(0);
+  });
+
+  it("judges a daily grid cell by that day's target", async () => {
+    const protein = goal({ id: "protein", frequency: "daily", targetCount: 2 });
+    setGoals(protein);
+    // One drink a day, every day of last week.
+    seedWeeks("protein", 1, 7);
+    seedTargetHistory(
+      "protein",
+      change({ date: "2026-05-01", at: 1, frequency: "daily", targetCount: 1, origin: "created" }),
+      change({ date: TODAY, at: 2, frequency: "daily", targetCount: 2, origin: "edited" })
+    );
+
+    const [{ entries }] = await getGoalHistories(U);
+    const lastWeek = entries.filter((e) => e.period >= "2026-08-17" && e.period <= "2026-08-23");
+    expect(lastWeek.every((e) => e.done)).toBe(true);
   });
 });
 
