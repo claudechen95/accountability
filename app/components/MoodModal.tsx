@@ -13,7 +13,9 @@ const WHEEL_EMOTIONS = [
   { emoji: "😎", label: "Confident" },
   { emoji: "🤩", label: "Amazed" },
   { emoji: "😏", label: "Playful" },
-  { emoji: "😐", label: "Neutral" },
+  // No "Neutral": the wheel asks how the day felt, and an entry that says nothing is the one
+  // answer a journal can't use - it's the reflex tap the countdown before the wheel exists to
+  // prevent. Everything here commits to a direction.
   { emoji: "🤔", label: "Confused" },
   { emoji: "😔", label: "Down" },
   { emoji: "😢", label: "Sad" },
@@ -25,7 +27,12 @@ const WHEEL_EMOTIONS = [
   { emoji: "😤", label: "Frustrated" },
 ];
 
-const TUT_STEPS = [0, 3, 6, 9, 13, 17];
+// Where the "slide to explore" hint touches down, as wheel positions. Derived from the list
+// rather than written out, so adding or removing an emotion can't leave the hint pointing at
+// positions that have since shifted - it only ever has to sweep most of the way round.
+const TUT_STEPS = Array.from({ length: 6 }, (_, i) =>
+  Math.round((i * WHEEL_EMOTIONS.length) / 7)
+);
 
 export function EmotionWheel({ selected, onSelect }: { selected: string; onSelect: (emoji: string) => void }) {
   const [hovered, setHovered] = useState("");
