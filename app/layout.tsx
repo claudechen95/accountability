@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNav from "./components/BottomNav";
 import PwaManifest from "./components/PwaManifest";
+import PullToRefresh from "./components/PullToRefresh";
 import { getUsers } from "@/lib/kv";
 
 export const viewport: Viewport = {
@@ -50,6 +51,7 @@ export default async function RootLayout({
     <html lang="en">
       <body className="min-h-screen bg-[#f8f7f4] pb-20">
         <PwaManifest />
+        <PullToRefresh />
         {children}
         <BottomNav hiddenByUser={hiddenByUser} />
       </body>

@@ -9,4 +9,7 @@
 body {
   background-color: var(--background);
   font-family: system-ui, -apple-system, sans-serif;
+  /* The page handles its own pull-to-refresh. Without this, Chrome reloads on its own
+     at the same moment and the indicator never gets to finish the gesture. */
+  overscroll-behavior-y: contain;
 }
