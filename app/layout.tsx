@@ -1,11 +1,35 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNav from "./components/BottomNav";
+import PwaManifest from "./components/PwaManifest";
 import { getUsers } from "@/lib/kv";
+
+export const viewport: Viewport = {
+  themeColor: "#f8f7f4",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
 
 export const metadata: Metadata = {
   title: "Accountability Tracker",
   description: "Daily accountability tracker",
+  applicationName: "Accountability",
+  appleWebApp: {
+    capable: true,
+    title: "Accountability",
+    statusBarStyle: "default",
+  },
+  icons: {
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  other: {
+    "mobile-web-app-capable": "yes",
+  },
 };
 
 export default async function RootLayout({
@@ -25,6 +49,7 @@ export default async function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen bg-[#f8f7f4] pb-20">
+        <PwaManifest />
         {children}
         <BottomNav hiddenByUser={hiddenByUser} />
       </body>

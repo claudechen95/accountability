@@ -6,6 +6,7 @@ import { addDaysToDateStr, dayOfWeek, weekKeyForDate, weeksInRange } from "./dat
 
 export { addDaysToDateStr };
 import { HIDEABLE_TABS } from "./tabs";
+import { MAX_PUSH_SUBSCRIPTIONS, type PushSubscriptionRecord } from "./push";
 import { instrumentRedis, span } from "./perf";
 import { cached, peek, prime, invalidate } from "./request-cache";
 
@@ -957,15 +958,13 @@ function historyLabels(periods: number, endDate: string = getTodayDate()): strin
  *
  * A graduated habit's window **ends at `graduatedAt`** rather than at today. The habit isn't
  * tracked any more - `addCheckIn` throws for it, so neither a check-in nor a backfill can ever
- * land - which means every day after graduation is a cell that could never hold anything. The
- * window used to roll forward anyway, and the grid carried a third "graduated" colour for those
- * days plus a rule excluding them from the completion-rate denominator. Once graduation was more
- * than `HISTORY_PERIODS` days back that denominator hit zero, so a habit that graduated *for* a
- * perfect run rendered as a blank grid reading 0% next to its frozen streak.
+ * land - which means every day after graduation is a cell that could never hold anything. A
+ * rolling window would therefore render a habit graduated more than `HISTORY_PERIODS` days ago as
+ * a blank grid, needing a third "graduated" cell colour and a carve-out in anything that counts
+ * cells.
  *
  * Freezing the window is the fix at the root: the card becomes the record of the run that earned
- * the graduation, every cell in it is a day that was really tracked, and the special-cased colour
- * and denominator both go away.
+ * the graduation, and every cell in it is a day that was really tracked.
  */
 function goalHistoryLabels(goal: Goal, periods: number): string[] {
   return historyLabels(periods, goal.graduatedAt);
@@ -1920,4 +1919,52 @@ export async function getNtfyTopic(userId: string | undefined): Promise<string |
 
   const upper = (userId ?? "").toUpperCase();
   return process.env[userId ? `NTFY_${upper}_TOPIC` : "NTFY_TOPIC"] ?? process.env.NTFY_TOPIC ?? null;
+}
+
+// --- Web Push subscriptions ---
+// One list per person. A browser can only hold one subscription for this origin, so saving claims
+// the endpoint: it leaves every other person's list. The home screen must not re-post on each
+// visit, or opening a shared browser on someone else's tracker would move the device.
+
+const PUSH_KEY = "push:subscriptions";
+
+function isStoredSubscription(value: unknown): value is PushSubscriptionRecord {
+  return !!value && typeof value === "object" && typeof (value as PushSubscriptionRecord).endpoint === "string";
+}
+
+export async function getPushSubscriptions(userId?: string): Promise<PushSubscriptionRecord[]> {
+  const key = k(userId, PUSH_KEY);
+  const stored = await cached(key, () => kv.get<unknown>(key));
+  if (!Array.isArray(stored)) return [];
+  return stored.filter(isStoredSubscription);
+}
+
+async function writePushSubscriptions(userId: string | undefined, next: PushSubscriptionRecord[]): Promise<void> {
+  const key = k(userId, PUSH_KEY);
+  if (next.length === 0) await kv.del(key);
+  else await kv.set(key, next);
+  invalidate(key);
+}
+
+export async function removePushSubscriptions(userId: string | undefined, endpoints: string[]): Promise<void> {
+  if (endpoints.length === 0) return;
+  const current = await getPushSubscriptions(userId);
+  if (!current.some((sub) => endpoints.includes(sub.endpoint))) return;
+  await writePushSubscriptions(
+    userId,
+    current.filter((sub) => !endpoints.includes(sub.endpoint)),
+  );
+}
+
+export async function savePushSubscription(userId: string | undefined, sub: PushSubscriptionRecord): Promise<void> {
+  const users = await getUsers();
+  for (const user of users) {
+    const other = resolveUser(user.id);
+    if (other === userId) continue;
+    await removePushSubscriptions(other, [sub.endpoint]);
+  }
+  const current = (await getPushSubscriptions(userId)).filter((existing) => existing.endpoint !== sub.endpoint);
+  current.push(sub);
+  // The oldest registration falls off. That phone shows the button again and registers once more.
+  await writePushSubscriptions(userId, current.slice(-MAX_PUSH_SUBSCRIPTIONS));
 }

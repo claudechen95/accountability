@@ -16,6 +16,8 @@ import {
   getTodayDate,
   getPstMinutesNow,
   resolveUser,
+  getPushSubscriptions,
+  removePushSubscriptions,
   type UserRecord,
 } from "@/lib/kv";
 import {
@@ -34,8 +36,30 @@ import {
 import { REPLY_HINT } from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
 import { isCallConfigured, placeCall, getCallOutcome } from "@/lib/call";
+import { isPushConfigured } from "@/lib/push";
+import { sendPush } from "@/lib/web-push";
 
-type Step = "text" | "call" | "reached" | "partner";
+type Step = "text" | "call" | "reached" | "partner" | "push";
+
+// The notification carries the habit lines only. The text-reply instructions name "pause", and a
+// notification has no reply channel, so that sentence stays on the SMS.
+async function sendReminderPush(user: UserRecord, list: string): Promise<boolean> {
+  if (!isPushConfigured()) return false;
+  const uid = resolveUser(user.id);
+  const subs = await getPushSubscriptions(uid);
+  if (subs.length === 0) return false;
+  const payload = { title: "Still pending", body: list, url: `/${user.id}` };
+  const results = await Promise.all(subs.map((sub) => sendPush(sub, payload)));
+  const gone = subs.filter((_, i) => results[i] === "gone").map((sub) => sub.endpoint);
+  if (gone.length) {
+    try {
+      await removePushSubscriptions(uid, gone);
+    } catch (err) {
+      console.error("Dropping a dead push subscription failed:", err instanceof Error ? err.message : "unknown");
+    }
+  }
+  return results.some((result) => result === "sent");
+}
 
 /**
  * Runs the whole five-step ladder for one user against one nudge day, and reports which steps
@@ -91,16 +115,25 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
 
   if (dueTexts.length > 0) {
     const list = dueTexts.map((g) => `${g.nudgeNumber}. ${g.emoji} ${g.name}`).join("\n");
-    // Names both reply shapes rather than inviting a free-form answer. Sendblue auto-detects
-    // stop/unsubscribe/cancel/opt out/revoke/end/quit and the carrier intercepts them ahead of
-    // Sendblue on SMS: any of those permanently blocks every future message to this number,
-    // transactional included, and never delivers the inbound webhook - so the ladder would keep
-    // calling and alerting the partner about texts that can no longer arrive. Offering "pause"
-    // is part of that defence: a user who means to skip today needs a word for it, or they
-    // improvise one, and the words people improvise are exactly the reserved ones.
-    await sendText(user.phone!, `⏰ Still pending:\n${list}\n${REPLY_HINT}`);
-    steps.push("text");
+    // Push first. A Sendblue failure still aborts the calls below, and the notification has
+    // already gone out for the slot this tick claimed.
+    if (await sendReminderPush(user, list)) steps.push("push");
+    if (user.phone) {
+      // Names both reply shapes rather than inviting a free-form answer. Sendblue auto-detects
+      // stop/unsubscribe/cancel/opt out/revoke/end/quit and the carrier intercepts them ahead of
+      // Sendblue on SMS: any of those permanently blocks every future message to this number,
+      // transactional included, and never delivers the inbound webhook - so the ladder would keep
+      // calling and alerting the partner about texts that can no longer arrive. Offering "pause"
+      // is part of that defence: a user who means to skip today needs a word for it, or they
+      // improvise one, and the words people improvise are exactly the reserved ones.
+      await sendText(user.phone, `⏰ Still pending:\n${list}\n${REPLY_HINT}`);
+      steps.push("text");
+    }
   }
+
+  // Calls and the partner text need a number. A subscription on its own still received the
+  // reminders above, and nothing past here can be delivered without a phone.
+  if (!user.phone) return steps;
 
   // Step 4, one ladder per habit, each hanging off its own last text. Resolving the previous
   // attempt happens before any new one is claimed, so "keep calling" is driven by what actually
@@ -220,8 +253,14 @@ async function POSTHandler(req: Request) {
   const anchors = nudgeAnchors(getPstMinutesNow(), getTodayDate());
   const results: { userId: string; step: Step }[] = [];
 
+  // No VAPID keys: phoneless users stay out entirely, so a tick does not claim their slots.
+  // A phone user is unchanged when push is off.
+  const pushOn = isPushConfigured();
   for (const user of await getUsers()) {
-    if (!user.phone) continue;
+    if (!user.phone) {
+      if (!pushOn) continue;
+      if ((await getPushSubscriptions(resolveUser(user.id))).length === 0) continue;
+    }
     try {
       for (const anchor of anchors) {
         const steps = await runLadder(user, anchor);

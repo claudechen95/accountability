@@ -22,7 +22,7 @@ Two things worth preserving in full, since they are exactly the kind of thing th
 
 ## Stack
 - **Frontend:** `app/page.tsx` (landing, lists users) + `app/[user]/page.tsx` (tracker)
-- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings, vacation, users, meeting-notes, nudge/dispatch, nudge/inbound, coach
+- **API routes:** `app/api/` — goals, checkins, history, notes, reflections, mood, settings, vacation, users, meeting-notes, nudge/dispatch, nudge/inbound, push, coach
 - **Data layer:** `lib/kv.ts` — all Redis reads/writes. Import from here, never call Redis directly elsewhere.
 - **Types:** `lib/types.ts` — `Goal`, `GoalStatus`, `NudgeCandidate`, `WeeklyNote`, `CheckInRecord`, `MoodEntry`
 - **Dates:** `lib/dates.ts` — pure `YYYY-MM-DD` arithmetic. Sits below `lib/kv.ts` and `lib/nudges.ts` because both need it and `kv` imports `nudges`.
@@ -37,7 +37,7 @@ Users are identified by URL path (`/alan`, `/rochisha`). All API routes read `?u
 - **`resolveUser(param)`** normalizes it: `"alan"` and `null`/`""` both map to `undefined` (Alan's data has no prefix). Anything else passes through.
 - **`k(userId, key)`** namespaces: `userId ? ${userId}:${key} : key`.
 
-Everything is isolated: goals, checkins, history, reflections, mood, notes, journal, settings, nudge dedup flags.
+Everything is isolated: goals, checkins, history, reflections, mood, notes, journal, settings, nudge dedup flags, push subscriptions.
 
 **Adding a user:** `/admin` (no terminal, no deploy — topics are generated and stored in Redis), or `node scripts/add-user.mjs <id> "<Label>"`. The ntfy topic lives in the `UserRecord` (`checkinTopic`); the checkins route reads it from Redis, falling back to env vars for Alan/Claude/Rochisha.
 
@@ -48,13 +48,13 @@ The list is read in **`app/layout.tsx`** (hence `async`): the nav is a client co
 
 **Habit-completion push** (so the partner sees a check-in): `NTFY_TOPIC` (Alan, legacy), `NTFY_CLAUDE_TOPIC`, `NTFY_ROCHISHA_TOPIC`, `NTFY_{USER_UPPER}_TOPIC` for anyone new. There is no in-app nudge modal — pending habits are surfaced entirely by the ladder below.
 
-## Escalating nudges (Sendblue + Twilio + QStash)
+## Escalating nudges (Sendblue + Web Push + Twilio + QStash)
 
-Any user with a `phone` set climbs a five-step ladder each day, **per habit**, until they check in. `lib/nudges.ts` owns the whole schedule and is pure — clock, weekday and habit list are passed in, so nothing else computes when a step is due.
+Any user with a `phone` set climbs a five-step ladder each day, **per habit**, until they check in. A browser subscription alone runs the reminder half (steps 1-3) when push is configured. Calls and the partner text still require the phone. `lib/nudges.ts` owns the whole schedule and is pure — clock, weekday and habit list are passed in, so nothing else computes when a step is due.
 
 | Step | When | What |
 |------|------|------|
-| 1-3 | `nudgeTime`, then evenly spread toward `DAY_END`, never closer than `MIN_SLOT_GAP_MIN` (20 min) | Text via Sendblue |
+| 1-3 | `nudgeTime`, then evenly spread toward `DAY_END`, never closer than `MIN_SLOT_GAP_MIN` (20 min) | Text via Sendblue, and the same list as a Web Push notification |
 | 4 | `habitCallStart` — `ESCALATION_DELAY_MIN` (10 min) after *that habit's* last text — retried every `CALL_RETRY_MIN` (10 min), `MAX_CALL_ATTEMPTS` (3) | Call via Twilio |
 | 5 | `PARTNER_ALERT_DELAY_MIN` (30 min) after the day's last call attempt, once no habit has an attempt left | Text to `partnerPhone` |
 
@@ -110,9 +110,15 @@ Confirmations: a snooze names each habit and **the time actually written**, so a
 
 ⚠️ **Never put a carrier opt-out keyword in an outbound message.** `STOP`, `STOPALL`, `UNSUBSCRIBE`, `CANCEL`, `END`, `QUIT` are intercepted by the carrier *ahead of* Sendblue on SMS and permanently block every future message from that sender — transactional included — while the inbound webhook never fires. The failure is silent and backwards: no mute is recorded, so the ladder keeps calling and alerting the partner about texts that can't be delivered, and undoing it needs the user to text `START` to their carrier. Sendblue additionally auto-detects `stop, unsubscribe, cancel, opt out, revoke, end, quit` (and `start`), so this bites on iMessage too, and there is **no API to query opt-out state**. The outbound line is `Snooze with the numbers and a time, e.g. "1 2 until 15:30", or "pause 1" to skip it today.` — it names the shapes of a reply rather than inviting a free-form one, because a free-form invitation is an invitation to improvise "stop". **Offering "pause" is part of that defence**: a user who means to skip today needs a word for it, and left to improvise reaches for exactly the reserved keywords. A test in `nudge-ladder` word-boundary-matches every outbound message against the reserved list.
 
-Env vars: `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET`, `NUDGE_DISPATCH_SECRET`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`.
+Env vars: `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET`, `NUDGE_DISPATCH_SECRET`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`.
 
 **Phone numbers:** `normalizePhone` canonicalizes to E.164 on write and `findUserByPhone` normalizes both sides. Load-bearing for inbound only — Sendblue and Twilio parse loose forms on *send*, but report an inbound sender in strict E.164, so a formatted stored number matches no user and silently drops every reply.
+
+### Web Push
+
+The same three reminders also go out as a notification, to every browser that has turned them on from the home screen. `lib/web-push.ts` is the only sender. Subscriptions are a list at `push:subscriptions`, one entry per device, replaced in place when the same device registers again. Saving one claims the endpoint and removes it from every other user's list, so a shared browser follows whoever just tapped Turn on. The home screen matches its own subscription locally and does not re-post on each visit, or opening someone else's tracker would take the device. A subscription the push service answers with 404 or 410 is dropped. Any other failure is logged by status only (the endpoint is a capability URL) and does not abort the ladder. One notification lists every habit that just claimed a slot, and a newer one replaces an undelivered older one (topic `nudge`). The notification does not carry the text-reply instructions.
+
+iOS delivers Web Push only to a site added to the Home Screen, so the manifest is `display: standalone` and the home screen tells an in-Safari iPhone to add it before offering the button. The manifest start path is the person whose page is open (`/rochisha`, or `/alan` for the unprefixed tabs). Tapping the notification opens that person's tracker. Endpoints are stored only when the host is Apple, Google, Mozilla, or Windows push. With `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, or `VAPID_SUBJECT` unset (`mailto:` or `https://`), the ladder skips push and the home screen hides the control. Generate with `npx web-push generate-vapid-keys`. The worker at `public/sw.js` handles `push` and `notificationclick` only, and is served with `Cache-Control: max-age=0, must-revalidate`.
 
 ## Data model
 
@@ -126,6 +132,7 @@ Env vars: `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SE
 | `note:{YYYY-Www}` | `WeeklyNote` |
 | `settings:vacation` | list of `VacationWindow` |
 | `coach:chat` | list of `CoachMessage` |
+| `push:subscriptions` | list of `{ endpoint, keys, expirationTime }`, one per device, capped at 10 |
 
 All prefixed with `{userId}:` for everyone but Alan.
 
@@ -196,7 +203,7 @@ Fill and ring are separate because a reflection is not evidence of a miss. Paint
 
 Every change to a habit's `frequency`/`targetCount` is appended to `target-history:{goalId}` and drawn as a step chart under its history grid. `recordTargetChange` is called from `POST /api/goals` on every write and no-ops unless the target moved.
 
-**It is what every past period is scored against.** A week is judged against the target the habit had *that week*: `targetAsOf(changes, date, goal)` walks to the last record on or before a date, and `targetOn` layers a vacation week's planned target on top. Both streak walks, `buildHistory`'s done/missed fill, the completion rate, graduation and the weekly reflection prompt all resolve through it — otherwise raising a target breaks a live streak and lowering one invents weeks that were never met. `primeTargetHistories` is therefore in `getGoalStatuses`'s priming wave, not just the history page's.
+**It is what every past period is scored against.** A week is judged against the target the habit had *that week*: `targetAsOf(changes, date, goal)` walks to the last record on or before a date, and `targetOn` layers a vacation week's planned target on top. Both streak walks, `buildHistory`'s done/missed fill, graduation and the weekly reflection prompt all resolve through it — otherwise raising a target breaks a live streak and lowering one invents weeks that were never met. `primeTargetHistories` is therefore in `getGoalStatuses`'s priming wave, not just the history page's.
 
 Two things it is **not**: nothing reads it to decide what to nudge about (the ladder uses the live target), and a `frequency` change isn't converted — a daily↔weekly reshape ends the streak rather than being rescored, which is what `streakOffset` covers for the one historical reshape.
 
@@ -210,7 +217,7 @@ Graduating **stops tracking entirely**: no check-ins (`addCheckIn` throws `Gradu
 
 **Offering it:** `GoalStatus.canGraduate` fires once the run reaches `GRADUATION_PERIODS` (4) consecutive periods at target — 28 days or 4 weeks. Mood goals are never eligible. "not yet" sets `graduationSnoozedUntil` 14 days out; un-graduating sets it too. All three actions go through `PATCH /api/goals` with `{ goalId, graduation: "graduate" | "ungraduate" | "snooze" }` (the same PATCH still handles `{ orderedIds }`).
 
-**In the history tab a graduated card is frozen, not rolling forward.** `goalHistoryLabels` ends its 91-day window at `graduatedAt`, and the target chart gets the same end date, so the card reads as the run that earned it. This follows from nothing being recordable after graduation: with a rolling window every post-graduation cell is one that can never be filled, and excluding them from the completion-rate denominator means a habit graduated more than 91 days ago renders as a blank grid reading 0%. The card also demotes into a collapsible "🏆 Graduated · N" section at the bottom (`GraduatedSection`), collapsed by default where the shelf is open. Its backfill handler is withheld (a tap that can only return 409) and its streak pill reads "final run".
+**In the history tab a graduated card is frozen, not rolling forward.** `goalHistoryLabels` ends its 91-day window at `graduatedAt`, and the target chart gets the same end date, so the card reads as the run that earned it. This follows from nothing being recordable after graduation: with a rolling window every post-graduation cell is one that can never be filled, so a habit graduated more than 91 days ago renders as a blank grid. The card also demotes into a collapsible "🏆 Graduated · N" section at the bottom (`GraduatedSection`), collapsed by default where the shelf is open. Its backfill handler is withheld (a tap that can only return 409) and its streak pill reads "final run".
 
 ### Vacation mode
 
@@ -367,6 +374,7 @@ The fake **records every command** in `fakeRedis.calls` (as `"<command> <keys>"`
 | `meeting-notes` | the Fathom scrape and the two notes it writes (summarizer mocked) |
 | `batching` | round-trip counts of the page-load reads (below) |
 | `tabs` | nav visibility, and an empty hidden set storing as absent |
+| `push` | subscription allowlist, the manifest start path, and a reminder delivered beside the text (including a person with no phone) |
 
 **`nudge-ladder`** is the one suite that drives an API route rather than the data layer. It replays a PST day at the real cron cadence (a POST every 10 simulated minutes) with Sendblue and Twilio mocked, asserting the exact transcript of what went out and when. The clock is the input under test, so ticks set the system time and let the route read it. Ticks past midnight are logged as `24:10` rather than `00:10`, so a transcript sorts in ladder order — the same reason `lib/nudges.ts` counts in minutes. The Twilio mock is a knob for what the *called party* did (`reached`/`missed`/`pending`), since that outcome is the only thing driving the retry loop.
 It pins per-habit independence (two clocks, two ladders; same-tick habits merging into one call; a habit past `DAY_END` still getting three texts), every escape hatch (a mute removing everything remaining including the partner alert; answering the phone doing the same; a snooze skipping reminders during the hold and resuming after; ten replays of one tick sending exactly once), and the overnight cases (a 23:30 ladder finishing at 01:10; a 23:55 check-in stopping the 00:20 call; a mute written after midnight under yesterday's key being honoured; an ordinary 18:00 habit **not** reopening after midnight). Pauses and snooze clamps are driven through the real inbound webhook rather than by seeding keys, since the webhook is the half that writes them.

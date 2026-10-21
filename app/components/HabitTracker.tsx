@@ -26,6 +26,7 @@ import type { VacationWindow } from "@/lib/kv";
 import { habitCallStart, nudgeSlots, MINUTES_PER_DAY } from "@/lib/nudges";
 import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
 import { VacationPlanner } from "@/app/components/VacationPlanner";
+import { PushReminders } from "@/app/components/PushReminders";
 import { timedFetch, logFirstData } from "@/lib/client-perf";
 
 const PST = "America/Los_Angeles";
@@ -1195,6 +1196,8 @@ export function HomePage({
           )}
         </div>
       </div>
+
+      <PushReminders userId={userId} />
 
       {/* Vacation planner */}
       {vacationFormOpen && !vacation && !upcomingVacation && (
