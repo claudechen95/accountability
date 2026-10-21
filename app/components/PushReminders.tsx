@@ -77,7 +77,8 @@ export function PushReminders({ userId }: { userId?: string }) {
     };
   }, [q]);
 
-  if (phase === "pending" || phase === "hidden") return null;
+  // Already on: the card is the offer, and the offer is done. Turning it off is a browser setting.
+  if (phase === "pending" || phase === "hidden" || phase === "on") return null;
 
   async function enable() {
     if (busy || !publicKey) return;
@@ -110,29 +111,6 @@ export function PushReminders({ userId }: { userId?: string }) {
     }
   }
 
-  async function disable() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const reg = await navigator.serviceWorker.getRegistration("/");
-      const sub = await reg?.pushManager.getSubscription();
-      if (sub) {
-        await timedFetch(`/api/push${q}`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ endpoint: sub.endpoint }),
-        });
-        await sub.unsubscribe();
-      }
-      setPhase("off");
-    } catch {
-      setError("Couldn't turn reminders off.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <section className="mb-6 rounded-2xl border border-gray-200 bg-white p-4">
       {phase === "ios" && (
@@ -156,19 +134,6 @@ export function PushReminders({ userId }: { userId?: string }) {
             {busy ? "Turning on..." : "Turn on reminders"}
           </button>
         </>
-      )}
-      {phase === "on" && (
-        <p className="text-sm text-gray-700">
-          Reminders are on for this device.{" "}
-          <button
-            type="button"
-            onClick={disable}
-            disabled={busy}
-            className="text-gray-500 underline hover:text-gray-800 disabled:opacity-60"
-          >
-            {busy ? "Turning off..." : "turn off"}
-          </button>
-        </p>
       )}
       {phase === "denied" && (
         <>
