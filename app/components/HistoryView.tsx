@@ -373,11 +373,7 @@ function GoalHistoryCard({
 }) {
   const { goal, entries, streak, reflections, targetHistory } = goalHistory;
   const today = getTodayPST();
-  // A graduated habit's window already ends at its graduation, so every entry in it is a day the
-  // habit was really being tracked on - there is nothing to exclude here for either kind.
   const doneCount = entries.filter((e) => e.done).length;
-  const totalPast = entries.filter((e) => e.period <= today).length;
-  const rate = totalPast > 0 ? Math.round((doneCount / totalPast) * 100) : 0;
   const graduatedOn = goal.graduatedAt
     ? new Date(goal.graduatedAt + "T12:00:00").toLocaleDateString("en-US", {
         month: "short",
@@ -404,8 +400,6 @@ function GoalHistoryCard({
       </div>
 
       <div className="flex justify-around mb-5 py-3 bg-gray-50 rounded-xl">
-        <StatPill label="completion" value={`${rate}%`} />
-        <div className="w-px bg-gray-200" />
         <StatPill label="check-ins" value={doneCount} />
         <div className="w-px bg-gray-200" />
         {/* Days for a daily habit, weeks for a weekly one. Spelled out because a bare "🔥 9" on a
