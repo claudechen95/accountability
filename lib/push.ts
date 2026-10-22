@@ -41,6 +41,14 @@ export function vapidPublicKey(): string | null {
   return isPushConfigured() ? process.env.VAPID_PUBLIC_KEY! : null;
 }
 
+// Apple rejects a Web Push topic longer than 32 characters, and the notification then never
+// arrives. One tag per habit, and never "nudge", so two check-ins don't erase each other and
+// neither replaces a pending-habit reminder.
+export function checkinPushTag(goalId: string): string {
+  const compact = goalId.replace(/[^A-Za-z0-9]/g, "");
+  return `c${(compact || "habit").slice(0, 31)}`;
+}
+
 export function isPushEndpoint(endpoint: string): boolean {
   let url: URL;
   try {

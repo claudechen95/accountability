@@ -88,7 +88,12 @@ DELETE /api/goals?user=rochisha
 
 ## Push Notifications
 
-When a user checks off a goal, a "checked in" push is sent via [ntfy.sh](https://ntfy.sh) so your accountability partner sees it. Each user needs their own topic env var:
+When a user checks off a goal, their accountability partner gets a notification in the installed app, on the devices where that partner turned reminders on.
+The partner is the person whose phone is set as Partner in `/admin`.
+Tapping the notification opens the checker's tracker.
+Logging a missed day from the history grid does not send one.
+
+If the push doesn't reach any device, the same check-in still goes to the checker's [ntfy.sh](https://ntfy.sh) topic:
 
 - Alan: `NTFY_TOPIC`
 - Rochisha: `NTFY_ROCHISHA_TOPIC`

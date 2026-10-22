@@ -124,7 +124,7 @@ export function PushReminders({ userId }: { userId?: string }) {
       {phase === "off" && (
         <>
           <p className="text-sm font-semibold text-gray-900">Reminders on this device</p>
-          <p className="mt-1 text-sm text-gray-600">A notification when a habit is still open.</p>
+          <p className="mt-1 text-sm text-gray-600">A notification when a habit is still open, and when your partner checks one in.</p>
           <button
             type="button"
             onClick={enable}

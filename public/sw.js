@@ -9,6 +9,12 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+function notificationTag(payload) {
+  const tag = payload.tag;
+  if (typeof tag === "string" && /^[A-Za-z0-9]{1,32}$/.test(tag)) return tag;
+  return "nudge";
+}
+
 function sameOriginUrl(raw) {
   try {
     const url = new URL(raw || "/", self.location.origin);
@@ -28,12 +34,16 @@ self.addEventListener("push", (event) => {
   }
   const title = typeof payload.title === "string" ? payload.title : "Still pending";
   const body = typeof payload.body === "string" ? payload.body : "Open the app to check in.";
+  // A reminder has no tag and collapses onto "nudge". A check-in names its habit, so the two
+  // don't replace each other on the lock screen.
+  const tag = notificationTag(payload);
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
-      tag: "nudge",
+      tag,
+      renotify: payload.renotify === true,
       data: { url: typeof payload.url === "string" ? payload.url : "/" },
     })
   );

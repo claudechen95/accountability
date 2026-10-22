@@ -37,7 +37,7 @@ import { REPLY_HINT } from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
 import { isCallConfigured, placeCall, getCallOutcome } from "@/lib/call";
 import { isPushConfigured } from "@/lib/push";
-import { sendPush } from "@/lib/web-push";
+import { sendPushToAll } from "@/lib/web-push";
 
 type Step = "text" | "call" | "reached" | "partner" | "push";
 
@@ -48,9 +48,7 @@ async function sendReminderPush(user: UserRecord, list: string): Promise<boolean
   const uid = resolveUser(user.id);
   const subs = await getPushSubscriptions(uid);
   if (subs.length === 0) return false;
-  const payload = { title: "Still pending", body: list, url: `/${user.id}` };
-  const results = await Promise.all(subs.map((sub) => sendPush(sub, payload)));
-  const gone = subs.filter((_, i) => results[i] === "gone").map((sub) => sub.endpoint);
+  const { sent, gone } = await sendPushToAll(subs, { title: "Still pending", body: list, url: `/${user.id}` });
   if (gone.length) {
     try {
       await removePushSubscriptions(uid, gone);
@@ -58,7 +56,7 @@ async function sendReminderPush(user: UserRecord, list: string): Promise<boolean
       console.error("Dropping a dead push subscription failed:", err instanceof Error ? err.message : "unknown");
     }
   }
-  return results.some((result) => result === "sent");
+  return sent;
 }
 
 /**

@@ -46,7 +46,19 @@ The list is read in **`app/layout.tsx`** (hence `async`): the nav is a client co
 
 ⚠️ **Hiding a tab is decluttering, not permission.** There's no auth: the route still renders for anyone with the URL, and nothing server-side checks `hiddenTabs`. Same goes for every other "hidden for other users" feature here.
 
-**Habit-completion push** (so the partner sees a check-in): `NTFY_TOPIC` (Alan, legacy), `NTFY_CLAUDE_TOPIC`, `NTFY_ROCHISHA_TOPIC`, `NTFY_{USER_UPPER}_TOPIC` for anyone new. There is no in-app nudge modal — pending habits are surfaced entirely by the ladder below.
+**Habit-completion push** (so the partner sees a check-in): a Web Push to every device of the user whose phone is this user's `partnerPhone`.
+Only a live check-in sends one.
+A `date` on the request is a history backfill and stays quiet.
+The tag is one per habit and is not `nudge`, and the service worker shows that tag, so a check-in and a pending-habit reminder do not replace each other.
+Apple's Web Push topic is at most 32 characters, so the tag is capped there.
+A longer one is rejected and the notification never arrives.
+It stays deliverable for 12 hours, because a morning check-in is still news that evening.
+Tapping it opens the checker's tracker.
+A push that reaches no device falls back to that user's ntfy topic (`checkinTopic`, else `NTFY_TOPIC` / `NTFY_{USER}_TOPIC`).
+A push that lands does not also ntfy, or anyone with both would hear it twice.
+The check-in is saved before either send, and neither failure changes the response.
+There is no in-app nudge modal.
+Pending habits are surfaced entirely by the ladder below.
 
 ## Escalating nudges (Sendblue + Web Push + Twilio + QStash)
 
@@ -116,7 +128,10 @@ Env vars: `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_FROM_NUMBER`, `SE
 
 ### Web Push
 
-The same three reminders also go out as a notification, to every browser that has turned them on from the home screen. `lib/web-push.ts` is the only sender. Subscriptions are a list at `push:subscriptions`, one entry per device, replaced in place when the same device registers again. Saving one claims the endpoint and removes it from every other user's list, so a shared browser follows whoever just tapped Turn on. The home screen matches its own subscription locally and hides the control once this device is on. It does not re-post on each visit, or opening someone else's tracker would take the device. A subscription the push service answers with 404 or 410 is dropped. Any other failure is logged by status only (the endpoint is a capability URL) and does not abort the ladder. One notification lists every habit that just claimed a slot, and a newer one replaces an undelivered older one (topic `nudge`). The notification does not carry the text-reply instructions.
+The same three reminders also go out as a notification, to every browser that has turned them on from the home screen. `lib/web-push.ts` is the only sender. Subscriptions are a list at `push:subscriptions`, one entry per device, replaced in place when the same device registers again. Saving one claims the endpoint and removes it from every other user's list, so a shared browser follows whoever just tapped Turn on. The home screen matches its own subscription locally and hides the control once this device is on. It does not re-post on each visit, or opening someone else's tracker would take the device. A subscription the push service answers with 404 or 410 is dropped. Any other failure is logged by status only (the endpoint is a capability URL) and does not abort the ladder. One notification lists every habit that just claimed a slot, and a newer one replaces an undelivered older one (topic `nudge`).
+The notification does not carry the text-reply instructions.
+A check-in is not part of that collapse.
+It has its own per-habit topic, and the worker shows the payload's tag instead of `nudge`, so the two stay on the lock screen together.
 
 iOS delivers Web Push only to a site added to the Home Screen, so the manifest is `display: standalone` and the home screen tells an in-Safari iPhone to add it before offering the button. The manifest start path is the person whose page is open (`/rochisha`, or `/alan` for the unprefixed tabs). Tapping the notification opens that person's tracker. Endpoints are stored only when the host is Apple, Google, Mozilla, or Windows push. With `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, or `VAPID_SUBJECT` unset (`mailto:` or `https://`), the ladder skips push and the home screen hides the control. Generate with `npx web-push generate-vapid-keys`. The worker at `public/sw.js` handles `push` and `notificationclick` only, and is served with `Cache-Control: max-age=0, must-revalidate`. It does not cache pages, so a reload is a new version.
 
@@ -376,6 +391,7 @@ The fake **records every command** in `fakeRedis.calls` (as `"<command> <keys>"`
 | `batching` | round-trip counts of the page-load reads (below) |
 | `tabs` | nav visibility, and an empty hidden set storing as absent |
 | `push` | subscription allowlist, the manifest start path, and a reminder delivered beside the text (including a person with no phone) |
+| `checkin-push` | a live check-in reaches the partner's devices under its own tag; ntfy only when that push doesn't land |
 | `pull` | how far a finger has to travel before a pull reloads, and a sideways drag not counting |
 
 **`nudge-ladder`** is the one suite that drives an API route rather than the data layer. It replays a PST day at the real cron cadence (a POST every 10 simulated minutes) with Sendblue and Twilio mocked, asserting the exact transcript of what went out and when. The clock is the input under test, so ticks set the system time and let the route read it. Ticks past midnight are logged as `24:10` rather than `00:10`, so a transcript sorts in ladder order — the same reason `lib/nudges.ts` counts in minutes. The Twilio mock is a knob for what the *called party* did (`reached`/`missed`/`pending`), since that outcome is the only thing driving the retry loop.
