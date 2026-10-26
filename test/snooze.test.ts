@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   REPLY_HINT,
   formatSnoozeWhen,
+  doneConfirmation,
   parseNudgeReply,
   pauseConfirmation,
   snoozeConfirmation,
@@ -9,12 +10,12 @@ import {
   soonestUntil,
 } from "@/lib/snooze";
 
-// The reply grammar. A nudge text asks for one of two answers - habit numbers with a clock time
-// to delay them, or "pause" to skip them for the day - and this is the whole of what counts as
-// either. Anything else is not an answer.
+// The reply grammar. A nudge text asks for one of three answers: "done" plus habit numbers to
+// check them in, habit numbers with a clock time to delay them, or "pause" to skip them for the
+// day. Anything else is not an answer.
 //
-// A clock time is what tells them apart, and that's the distinction itself: a time means "later
-// today", no time means "not today".
+// A clock time still means "later today". Without one, "done" and "pause" are different commands,
+// and a reply that says both is neither.
 
 const snooze = (text: string) => {
   const parsed = parseNudgeReply(text);
@@ -95,6 +96,44 @@ describe("parsing a pause", () => {
     // Habits are named by number, never by name - "gym" could be any of several.
     expect(parseNudgeReply("pause gym")).toBeNull();
     expect(parseNudgeReply("pause 0")).toBeNull();
+  });
+});
+
+// Checking the habit in, as opposed to skipping it. A number is required: "done" on its own
+// would record a completion the sender may not have meant, and a completion is not a mute.
+describe("parsing a done", () => {
+  it("reads the numbers it names", () => {
+    expect(parseNudgeReply("done 1")).toEqual({ kind: "done", numbers: [1] });
+    expect(parseNudgeReply("done 1 2")).toEqual({ kind: "done", numbers: [1, 2] });
+    expect(parseNudgeReply("1 done")).toEqual({ kind: "done", numbers: [1] });
+  });
+
+  it("strips the same padding a pause allows, and dedupes", () => {
+    expect(parseNudgeReply("please done #1, #1 and #2")).toEqual({
+      kind: "done",
+      numbers: [1, 2],
+    });
+  });
+
+  it("is not a command without a number, so a bare done cannot check everything in", () => {
+    expect(parseNudgeReply("done")).toBeNull();
+    expect(parseNudgeReply("done all")).toBeNull();
+    expect(parseNudgeReply("Done it today")).toBeNull();
+  });
+
+  it("rejects a done padded out with anything it can't read", () => {
+    expect(parseNudgeReply("done gym")).toBeNull();
+    expect(parseNudgeReply("done 0")).toBeNull();
+  });
+
+  it("reads a done that names a time as the snooze it is", () => {
+    expect(snooze("done 1 until 15:30")).toEqual([
+      { numbers: [1], clockMins: [15 * 60 + 30] },
+    ]);
+  });
+
+  it("does nothing when the reply names both done and pause", () => {
+    expect(parseNudgeReply("done 1 pause 2")).toBeNull();
   });
 });
 
@@ -197,6 +236,22 @@ describe("formatting", () => {
 
   it("falls back to the hint when a pause reached nothing at all", () => {
     expect(pauseConfirmation({ paused: [], missedNumbers: [], leftOut: false })).toBe(REPLY_HINT);
+  });
+
+  it("names what a done checked off, and what it left running", () => {
+    expect(
+      doneConfirmation({ done: ["🥗 Salad"], missedNumbers: [], leftOut: false })
+    ).toBe("✅ Checked off: 🥗 Salad.");
+
+    expect(
+      doneConfirmation({ done: ["🥗 Salad", "🏋️ Gym"], missedNumbers: [9], leftOut: true })
+    ).toBe(
+      "✅ Checked off: 🥗 Salad, 🏋️ Gym. No habit numbered 9 is nudging right now. Anything you left out will keep nudging."
+    );
+  });
+
+  it("falls back to the hint when a done reached nothing at all", () => {
+    expect(doneConfirmation({ done: [], missedNumbers: [], leftOut: false })).toBe(REPLY_HINT);
   });
 });
 

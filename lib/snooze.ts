@@ -1,26 +1,32 @@
 import { formatHHMM, maxSnoozeUntil, MINUTES_PER_DAY } from "./nudges";
 
 /**
- * The whole grammar of a reply to a nudge text. Two shapes, and nothing else does anything:
+ * The whole grammar of a reply to a nudge text. Three shapes, and nothing else does anything:
  *
+ *   "done 1"           a check-in. Those habits are recorded done for the nudge day, the same
+ *                      record as the button, so the ladder stops because the habit is finished
+ *                      and the partner hears about the check-in.
  *   "1 2 until 15:30"  a delay. Several numbers share one time, and several times can share one
  *                      reply ("1 until 15:30 and 2 until 4pm"). The ladder resumes afterwards,
  *                      partner alert included.
  *   "pause 1"          a deliberate skip. That habit is finished being asked about for the day:
  *                      no more texts, no call, and no partner alert - the same full exit as
- *                      answering the phone.
+ *                      answering the phone. The habit stays unchecked.
  *
  * Pause is here because a snooze needs a time the user intends to actually do the thing, and
  * "I'm not doing it today, on purpose" has no such time. Without it the only exits were checking
  * in and picking up the phone, so an intentional rest day was indistinguishable from ignoring
  * the app, and the only reply that fit was a time the user knew was a lie.
  *
- * It is a quiet exit, and knowingly so: the partner is not told that a paused habit went
- * unfinished. The scope is what keeps that honest - a pause only reaches habits that are nudging
- * when it arrives, so it can never silence a question that hasn't been asked yet.
+ * Done is the check-in those two are not. A pause silences the evening and leaves the day
+ * missed; a person who finished the habit needs a word that records it.
+ *
+ * Both are quiet about habits that have not been asked yet. A number is required on done,
+ * because a completion is a record and a bare "done" would write one the sender may not have
+ * meant. A pause still reaches every habit nudging at that moment when it names none.
  */
 export const REPLY_HINT =
-  `Snooze with the numbers and a time, e.g. "1 2 until 15:30", or "pause 1" to skip it today.`;
+  `Reply "done 1" to check it off, "1 2 until 15:30" to snooze, or "pause 1" to skip it today.`;
 
 export interface SnoozeGroup {
   numbers: number[];
@@ -31,11 +37,13 @@ export interface SnoozeGroup {
   clockMins: number[];
 }
 
-/** One of the two commands, as the reply asked for it. */
+/** One of the three commands, as the reply asked for it. */
 export type NudgeReply =
   | { kind: "snooze"; groups: SnoozeGroup[] }
   /** Empty numbers means a bare "pause": every habit that is nudging right now. */
-  | { kind: "pause"; numbers: number[] };
+  | { kind: "pause"; numbers: number[] }
+  /** Always at least one number. A bare "done" is not this command. */
+  | { kind: "done"; numbers: number[] };
 
 const FILLER = new Set([
   "snooze", "please", "the", "for", "me", "to", "at", "until", "till", "til",
@@ -45,6 +53,7 @@ const FILLER = new Set([
 ]);
 
 const PAUSE_WORDS = new Set(["pause", "skip"]);
+const DONE_WORDS = new Set(["done"]);
 
 function tokenize(text: string): string[] {
   const normalized = text
@@ -59,21 +68,45 @@ function tokenize(text: string): string[] {
 }
 
 /**
- * Reads a reply into whichever of the two commands it is, or null for anything else - "ok", a
- * bare number, a time with no numbers.
+ * Reads a reply into whichever of the three commands it is, or null for anything else - "ok", a
+ * bare number, a bare "done", a time with no numbers, "done" and "pause" in the same reply.
  *
- * A clock time is what separates the two, because that's what the difference between them *is*:
- * a time means "later today", its absence means "not today". So "pause 1 until 4pm" is a snooze
- * and the word is treated as filler, rather than being rejected for naming both at once.
+ * A clock time means "later today", so "pause 1 until 4pm" and "done 1 until 4pm" are snoozes
+ * and the word is filler. Without a time, "done" and "pause" are different commands, and naming
+ * both is neither of them.
  */
 export function parseNudgeReply(text: string): NudgeReply | null {
   const tokens = tokenize(text);
   if (tokens.length === 0) return null;
-  if (tokens.some((t) => PAUSE_WORDS.has(t)) && !tokens.some((t) => parseTimeToken(t))) {
-    return parsePause(tokens);
+  const hasTime = tokens.some((t) => parseTimeToken(t));
+  if (hasTime) {
+    const groups = parseSnoozeGroups(tokens);
+    return groups && { kind: "snooze", groups };
   }
+  const hasPause = tokens.some((t) => PAUSE_WORDS.has(t));
+  const hasDone = tokens.some((t) => DONE_WORDS.has(t));
+  if (hasPause && hasDone) return null;
+  if (hasPause) return parsePause(tokens);
+  if (hasDone) return parseDone(tokens);
   const groups = parseSnoozeGroups(tokens);
   return groups && { kind: "snooze", groups };
+}
+
+/**
+ * The numbers a done named, or null if it named none or was padded out with anything we can't
+ * read. Empty is null on purpose: checking every nudging habit in is not what a bare "done" asks.
+ */
+function parseDone(tokens: string[]): NudgeReply | null {
+  const numbers: number[] = [];
+  for (const token of tokens) {
+    if (DONE_WORDS.has(token) || FILLER.has(token)) continue;
+    if (!/^\d{1,2}$/.test(token)) return null;
+    const n = Number(token);
+    if (n < 1) return null;
+    numbers.push(n);
+  }
+  if (numbers.length === 0) return null;
+  return { kind: "done", numbers: Array.from(new Set(numbers)) };
 }
 
 /** The numbers a pause named, or null if it was padded out with anything we can't read. */
@@ -101,7 +134,7 @@ function parseSnoozeGroups(tokens: string[]): SnoozeGroup[] | null {
   };
 
   for (const token of tokens) {
-    if (FILLER.has(token) || PAUSE_WORDS.has(token)) continue;
+    if (FILLER.has(token) || PAUSE_WORDS.has(token) || DONE_WORDS.has(token)) continue;
     const clockMins = parseTimeToken(token);
     if (clockMins) {
       if (!closeGroup(clockMins)) return null;
@@ -203,9 +236,9 @@ export function snoozeHold(
 }
 
 /**
- * The two sentences both confirmations end with: what the reply asked for that matched nothing,
- * and whether it left something still nudging. Shared so a pause and a snooze can't answer the
- * same two questions in two different voices.
+ * The two sentences the confirmations end with: what the reply asked for that matched nothing,
+ * and whether it left something still nudging. Shared so done, pause, and snooze can't answer
+ * the same two questions in three different voices.
  */
 function replyTail({
   missedNumbers,
@@ -222,6 +255,27 @@ function replyTail({
   }
   if (leftOut) parts.push("Anything you left out will keep nudging.");
   return parts;
+}
+
+/**
+ * What goes back after a done. Every habit it checked in is named, because a completion is a
+ * record: if it took something the user didn't mean, this line is where they see it.
+ */
+export function doneConfirmation({
+  done,
+  missedNumbers,
+  leftOut,
+}: {
+  done: string[];
+  missedNumbers: number[];
+  leftOut: boolean;
+}): string {
+  const parts: string[] = [];
+  if (done.length > 0) parts.push(`Checked off: ${done.join(", ")}.`);
+  parts.push(...replyTail({ missedNumbers, leftOut }));
+  if (parts.length === 0) return REPLY_HINT;
+  const body = parts.join(" ");
+  return done.length > 0 ? `✅ ${body}` : body;
 }
 
 /**

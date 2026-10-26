@@ -1,12 +1,27 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 import { fakeRedis } from "./redis-fake";
 import { POST } from "@/app/api/nudge/inbound/route";
-import { isNudgeMuted, getNudgeSnoozedUntil } from "@/lib/kv";
+import { isNudgeMuted, getNudgeSnoozedUntil, getCheckInsForPeriod } from "@/lib/kv";
+import { checkinPushTag } from "@/lib/push";
 import { REPLY_HINT } from "@/lib/snooze";
 import type { Goal } from "@/lib/types";
 
-// Sendblue's inbound webhook. A reply either snoozes the numbered habits that are nudging until
-// the clock time it names, or pauses them for the day. Anything else leaves the ladder running.
+const { sendNotification } = vi.hoisted(() => ({
+  sendNotification: vi.fn(async (
+    _sub: { endpoint: string },
+    _body: string,
+    _options?: { topic?: string; TTL?: number },
+  ) => ({ statusCode: 201 })),
+}));
+
+vi.mock("web-push", () => ({
+  setVapidDetails: () => {},
+  sendNotification,
+}));
+
+// Sendblue's inbound webhook. A reply checks in the numbered habits ("done 1"), snoozes the
+// numbered habits that are nudging until the clock time it names, or pauses them for the day.
+// Anything else leaves the ladder running.
 
 const { texts } = vi.hoisted(() => ({ texts: [] as { to: string; body: string }[] }));
 
@@ -227,5 +242,143 @@ describe("snoozing the habits a reply names", () => {
     fakeRedis.seed("tester:goals", [goals[2]]); // only the 21:00 habit, and it's 19:00
     await reply("on it");
     expect(texts[0].body).toBe(`Nothing's nudging you right now. ${REPLY_HINT}`);
+  });
+});
+
+// "done 1" is a check-in, not a mute. The habit has to show as done, and the ladder stops
+// because it is done - a pause would silence the same evening while leaving the day missed.
+describe("checking a habit in", () => {
+  async function count(goalId: string, date = TODAY) {
+    return getCheckInsForPeriod(goalId, date, "tester");
+  }
+
+  it("checks in only the habit the number names", async () => {
+    await reply("done 1");
+    expect(await count("salad")).toBe(1);
+    expect(await count("gym")).toBe(0);
+    expect(await muted("salad")).toBe(false);
+    expect(await getNudgeSnoozedUntil("tester", "salad", TODAY)).toBeNull();
+    expect(texts[0].body).toBe(
+      "✅ Checked off: 🥗 Salad. Anything you left out will keep nudging."
+    );
+  });
+
+  it("checks in several habits named in one reply", async () => {
+    await reply("done #1 and #2");
+    expect(await count("salad")).toBe(1);
+    expect(await count("gym")).toBe(1);
+    expect(await count("journal")).toBe(0);
+    expect(texts[0].body).toBe("✅ Checked off: 🥗 Salad, 🏋️ Gym.");
+  });
+
+  it("fills a daily habit up to its target, so done means done", async () => {
+    fakeRedis.seed("tester:goals", [{ ...goals[0], targetCount: 3 }]);
+    fakeRedis.seed(`tester:checkin:salad:${TODAY}`, 1);
+    await reply("done 1");
+    expect(await count("salad")).toBe(3);
+  });
+
+  it("logs a weekly habit once for the day, rather than filling the week's target", async () => {
+    fakeRedis.seed("tester:goals", [
+      {
+        ...goals[0],
+        frequency: "weekly" as const,
+        targetCount: 3,
+        nudgeDays: [3], // Wednesday, which is today
+      },
+    ]);
+    await reply("done 1");
+    expect(await count("salad")).toBe(1);
+  });
+
+  it("checks in nothing when the number belongs to a habit that hasn't nudged yet", async () => {
+    await reply("done 3");
+    expect(await count("journal")).toBe(0);
+    expect(await count("salad")).toBe(0);
+    expect(texts[0].body).toBe(
+      "No habit numbered 3 is nudging right now. Anything you left out will keep nudging."
+    );
+  });
+
+  it("checks nothing in and resends the instructions when the reply is a bare done", async () => {
+    await reply("done");
+    expect(await count("salad")).toBe(0);
+    expect(await count("gym")).toBe(0);
+    expect(texts[0].body).toBe(REPLY_HINT);
+  });
+
+  it("reads a done that names a time as the snooze it is", async () => {
+    await reply("done 1 until 20:30");
+    expect(await count("salad")).toBe(0);
+    expect(await getNudgeSnoozedUntil("tester", "salad", TODAY)).toBe(20 * 60 + 30);
+  });
+
+  it("writes the check-in on the nudge day when the reply arrives after midnight", async () => {
+    vi.setSystemTime(new Date(Date.UTC(2026, 7, 27, 7, 20))); // 00:20 PDT on Aug 27
+    try {
+      fakeRedis.seed("tester:goals", [
+        { ...goals[2], nudgeTime: "23:30", nudgeNumber: 1 },
+      ]);
+      await reply("done 1");
+      // The ladder started on Aug 26. Checking in Aug 27 would leave that evening unfinished.
+      expect(await count("journal", TODAY)).toBe(1);
+      expect(await count("journal", "2026-08-27")).toBe(0);
+      expect(texts[0].body).toBe("✅ Checked off: 📝 Video Journal.");
+    } finally {
+      vi.setSystemTime(new Date(Date.UTC(2026, 7, 27, 2, 0))); // back to 19:00 PDT Aug 26
+    }
+  });
+
+  it("sends the instructions when a done arrives with nothing nudging", async () => {
+    fakeRedis.seed("tester:goals", [goals[2]]);
+    await reply("done 3");
+    expect(await count("journal")).toBe(0);
+    expect(texts[0].body).toBe(`Nothing's nudging you right now. ${REPLY_HINT}`);
+  });
+
+  it("tells the partner once, on the check-in tag, even when the habit took several counts", async () => {
+    const previous = {
+      publicKey: process.env.VAPID_PUBLIC_KEY,
+      privateKey: process.env.VAPID_PRIVATE_KEY,
+      subject: process.env.VAPID_SUBJECT,
+    };
+    process.env.VAPID_PUBLIC_KEY = "public-key";
+    process.env.VAPID_PRIVATE_KEY = "private-key";
+    process.env.VAPID_SUBJECT = "mailto:test@example.com";
+    sendNotification.mockClear();
+    try {
+      const partner = "+15550000002";
+      fakeRedis.seed("users", [
+        { id: "tester", label: "Tester", phone: PHONE, partnerPhone: partner },
+        { id: "claude", label: "Claude", phone: partner, partnerPhone: PHONE },
+      ]);
+      fakeRedis.seed("tester:goals", [{ ...goals[0], targetCount: 3 }]);
+      fakeRedis.seed("claude:push:subscriptions", [{
+        endpoint: "https://web.push.apple.com/claude-phone",
+        expirationTime: null,
+        keys: { p256dh: "p256dh-key-material", auth: "auth-key-material" },
+      }]);
+      await reply("done 1");
+      expect(await count("salad")).toBe(3);
+      expect(sendNotification).toHaveBeenCalledTimes(1);
+      const [sub, body, options] = sendNotification.mock.calls[0];
+      expect(sub.endpoint).toBe("https://web.push.apple.com/claude-phone");
+      expect(JSON.parse(body)).toMatchObject({
+        title: "Tester checked in",
+        body: "🥗 Salad",
+        url: "/tester",
+        tag: checkinPushTag("salad"),
+      });
+      expect(options).toMatchObject({ topic: checkinPushTag("salad"), TTL: 12 * 60 * 60 });
+    } finally {
+      for (const [key, value] of Object.entries({
+        VAPID_PUBLIC_KEY: previous.publicKey,
+        VAPID_PRIVATE_KEY: previous.privateKey,
+        VAPID_SUBJECT: previous.subject,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });

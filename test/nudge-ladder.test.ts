@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vites
 import { fakeRedis } from "./redis-fake";
 import { POST } from "@/app/api/nudge/dispatch/route";
 import { POST as INBOUND } from "@/app/api/nudge/inbound/route";
+import { getCheckInsForPeriod, isNudgeMuted } from "@/lib/kv";
 import { REPLY_HINT } from "@/lib/snooze";
 import type { Goal } from "@/lib/types";
 
@@ -262,9 +263,10 @@ describe("carrier opt-out keywords", () => {
   // improvise, and "stop" or "cancel" are the obvious things to improvise. Offering "pause" is
   // part of the same defence rather than a hole in it - a user who means to skip today needs a
   // word for that, and the test above is what guarantees the word we give them is a safe one.
-  it("names both reply shapes rather than inviting a free-form answer", async () => {
+  it("names the reply shapes rather than inviting a free-form answer", async () => {
     await runDay();
     expect(texts[0].body).toContain(REPLY_HINT);
+    expect(texts[0].body).toContain("done");
     expect(texts[0].body).toContain("pause");
   });
 
@@ -333,6 +335,23 @@ describe("muting a habit for the day", () => {
 
   // The mute a user can actually reach, end to end: the webhook writes it and the tick reads it,
   // so "pause" only exists in the two of them together. Seeding the key tests the second half.
+  it("ends that habit's day when the reply checks it in", async () => {
+    const log: string[] = [];
+    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "18:10") await replyFromUser("done 1");
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    // A check-in is a full exit, the same as a pause, except the day is actually done.
+    expect(log).toEqual([`18:00 text→${PHONE}`]);
+    expect(texts.some((t) => t.body.startsWith("✅ Checked off:"))).toBe(true);
+    expect(await getCheckInsForPeriod("salad", TODAY, "tester")).toBe(1);
+    expect(await isNudgeMuted("tester", "salad", TODAY)).toBe(false);
+  });
+
   it("ends that habit's day when the mute arrives as a texted pause", async () => {
     const log: string[] = [];
     for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {

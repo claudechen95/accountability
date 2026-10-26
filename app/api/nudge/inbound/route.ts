@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { withPerf } from "@/lib/perf";
 import {
+  addCheckIn,
   findUserByPhone,
   setNudgeSnoozedUntil,
   setNudgeMuted,
@@ -9,6 +10,7 @@ import {
   getPstMinutesNow,
   resolveUser,
 } from "@/lib/kv";
+import { notifyCheckIn } from "@/lib/checkin-notify";
 import { getPendingNudges, crossesMidnight, nudgeAnchors } from "@/lib/nudges";
 import {
   REPLY_HINT,
@@ -18,8 +20,20 @@ import {
   snoozeHold,
   snoozeConfirmation,
   pauseConfirmation,
+  doneConfirmation,
 } from "@/lib/snooze";
 import { sendText } from "@/lib/sendblue";
+import type { NudgeCandidate } from "@/lib/types";
+
+// How many check-ins "done" still owes this habit. A daily habit is filled up to the day's
+// target, so the reply means the habit is done. A weekly habit is logged once for the nudge
+// day, which is what takes it off today's ladder.
+async function checkOff(userId: string | undefined, goal: NudgeCandidate, date: string): Promise<boolean> {
+  const times = goal.frequency === "weekly" ? 1 : Math.max(0, goal.targetCount - goal.completedThisPeriod);
+  if (times === 0) return false;
+  for (let i = 0; i < times; i++) await addCheckIn(goal.id, date, userId);
+  return true;
+}
 
 // Sendblue's inbound-message webhook target, registered via POST /api/account/webhooks with
 // our own chosen secret (see CLAUDE.md). Sendblue's docs confirm the secret is echoed back in
@@ -61,18 +75,7 @@ async function POSTHandler(req: Request) {
         // after midnight the text being answered may belong to a ladder that started yesterday
         // evening, and the hold has to be written under that day's key or the ladder carries on.
         const wallNow = getPstMinutesNow();
-        const pending: {
-          date: string;
-          carryover: boolean;
-          goal: {
-            id: string;
-            emoji: string;
-            name: string;
-            nudgeNumber?: number;
-            nudgeTime?: string;
-            nudgeIntervalMin?: number | null;
-          };
-        }[] = [];
+        const pending: { date: string; carryover: boolean; goal: NudgeCandidate }[] = [];
         for (const a of nudgeAnchors(wallNow, getTodayDate())) {
           const candidates = await getNudgeCandidates(a.date, uid);
           const inPlay = a.carryover
@@ -83,8 +86,8 @@ async function POSTHandler(req: Request) {
           }
         }
 
-        // Only the two instructed shapes do anything. Anything else - "ok", "on it" - gets the
-        // instructions back and leaves the ladder running.
+        // Only the three instructed shapes do anything. Anything else - "ok", "on it", a bare
+        // "done" - gets the instructions back and leaves the ladder running.
         const parsed = parseNudgeReply(reply);
         let body_: string;
         if (!parsed) {
@@ -114,6 +117,43 @@ async function POSTHandler(req: Request) {
             paused: Array.from(paused.values()),
             missedNumbers: named.filter((n) => !matched.has(n)),
             leftOut: pending.some((p) => !paused.has(`${p.date}:${p.goal.id}`)),
+          });
+        } else if (parsed.kind === "done") {
+          // A check-in, scoped exactly like a pause: only a habit that is already nudging, and
+          // only on the nudge day that ladder belongs to. After midnight that day is yesterday,
+          // and writing today instead would leave the evening that asked still unfinished.
+          const named = parsed.numbers;
+          const targets = pending.filter(
+            (p) => p.goal.nudgeNumber != null && named.includes(p.goal.nudgeNumber)
+          );
+          const checked = new Map<string, string>();
+          const labels: string[] = [];
+          for (const hit of targets) {
+            const key = `${hit.date}:${hit.goal.id}`;
+            if (checked.has(key)) continue;
+            const label = `${hit.goal.emoji} ${hit.goal.name}`;
+            try {
+              if (await checkOff(uid, hit.goal, hit.date)) {
+                checked.set(key, label);
+                if (!labels.includes(label)) labels.push(label);
+              }
+            } catch (err) {
+              console.error(`Check-in from a nudge reply failed for ${hit.goal.id}:`, err);
+            }
+          }
+          // The partner hears a live check-in, including one filed on yesterday because the
+          // ladder crossed midnight. One notice per habit, however many counts it took to finish.
+          const notified = new Set<string>();
+          for (const hit of targets) {
+            if (!checked.has(`${hit.date}:${hit.goal.id}`) || notified.has(hit.goal.id)) continue;
+            notified.add(hit.goal.id);
+            await notifyCheckIn(hit.goal.id, uid);
+          }
+          const matched = new Set(targets.map((t) => t.goal.nudgeNumber));
+          body_ = doneConfirmation({
+            done: labels,
+            missedNumbers: named.filter((n) => !matched.has(n)),
+            leftOut: pending.some((p) => !checked.has(`${p.date}:${p.goal.id}`)),
           });
         } else {
           const applied = new Map<string, { label: string; when: string; capped: boolean }>();
