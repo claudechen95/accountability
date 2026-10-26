@@ -323,6 +323,9 @@ npm run verify:quick # lint + typecheck + test, for the inner loop
 npm test             # vitest run
 npm run deploy       # git push (Vercel deploys from main)
 ```
+
+**Finishing a task ships it.** Commit that task's changes on `main` (merge the branch first if the work is elsewhere), then `npm run deploy`. Leave unrelated files out, including `.claude/` and a stale `AGENTS.md`. Wait until CI is green and the live tracker shows the new version. A question that changes nothing does not deploy. A Redis edit is already live and does not need a push by itself. An explicit "don't deploy" overrides this.
+
 Env vars: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` in `.env.local`.
 
 **Local/CI parity.** `npm run verify` mirrors `.github/workflows/ci.yml` step for step — env check, lock check, lint, typecheck, test, build — so a green verify means a green CI. Change one and change the other.
