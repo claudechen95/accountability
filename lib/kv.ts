@@ -768,6 +768,7 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
         return {
           ...goal,
           completedThisPeriod: goal.targetCount,
+          periodTarget: goal.targetCount,
           isDone: true,
           streak: goal.graduatedRun ?? 0,
           todayCount: 0,
@@ -776,16 +777,22 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
         };
       }
 
-      const [completed, streak, todayCount, reflection] = await Promise.all([
+      const [completed, streak, todayCount, reflection, changes, windows] = await Promise.all([
         span("completedThisPeriod", () => getCompletedThisPeriod(goal, userId)),
         span("streak", () => getStreak(goal, userId)),
         span("todayCount", () => getCheckInsForPeriod(goal.id, getTodayDate(), userId)),
         span("reflectionPrompt", () => getReflectionPrompt(goal, userId)),
+        getTargetHistory(goal.id, userId),
+        getVacationWindows(userId),
       ]);
+      // A vacation week substitutes its own target. Zero is "paused", not "already done".
+      // The stored target stays on the habit so the editor cannot persist the vacation number.
+      const periodTarget = targetOn(goal, changes, getTodayDate(), windows).targetCount;
       return {
         ...goal,
         completedThisPeriod: completed,
-        isDone: completed >= goal.targetCount,
+        periodTarget,
+        isDone: periodTarget > 0 && completed >= periodTarget,
         streak,
         todayCount,
         reflection,
@@ -796,9 +803,10 @@ export async function getGoalStatuses(userId?: string): Promise<GoalStatus[]> {
 }
 
 // --- Target history ---
-// What each habit has been asked to hit, and since when. Appended only - never rewritten - and
-// read only for display: nothing here feeds getHistory, the streaks or graduation, all of which
-// still score every past period against the habit's current target.
+// What each habit has been asked to hit, and since when. Appended only, never rewritten.
+// Past periods are scored against it (`targetAsOf`, then a vacation week via `targetOn`),
+// including the home screen's current period. The ladder does not read it: a nudge uses the
+// live target, with that week's vacation plan applied on top.
 
 function sortTargetChanges(raw: (string | TargetChange)[]): TargetChange[] {
   const changes = raw.map((entry) => (typeof entry === "string" ? (JSON.parse(entry) as TargetChange) : entry));

@@ -31,9 +31,8 @@ export interface Goal {
 // of `date` - not the change - so a chart of them is a step line, and the direction of a change
 // is just this entry compared with the one before it.
 //
-// This is a log, not a scoring input: getHistory, the streaks and graduation all still judge
-// every past period against the habit's *current* target. Nothing reads target history to decide
-// whether a day or a week was met.
+// A log of what was being asked, which is also what past periods are scored against
+// (`targetAsOf`). The habit's current target is only the latest entry.
 export interface TargetChange {
   date: string;                     // YYYY-MM-DD (PST) the target took effect
   at: number;                       // epoch ms, so several edits on one day still order
@@ -113,6 +112,10 @@ export interface NudgeCandidate extends Goal {
 
 export interface GoalStatus extends NudgeCandidate {
   isDone: boolean;
+  // What this period is actually asking for. A vacation week substitutes its own
+  // target; otherwise this is `targetCount`. The stored target stays on the habit
+  // so editing it during a trip does not save the vacation number as the new normal.
+  periodTarget: number;
   streak: number;
   reflection: ReflectionPrompt | null;
   // The run is long enough to offer graduation and the user hasn't waved the offer off yet.

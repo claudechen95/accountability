@@ -632,6 +632,9 @@ function GoalCard({
   const doneCard = goal.isDone;
   const doneCircle = isHandled(goal);
   const label = goal.frequency === "daily" ? "today" : "this week";
+  // A paused vacation week stores 0. Fall back to the standing target so the card still
+  // describes the habit; the paused badge is what says this week isn't asking for it.
+  const asked = goal.periodTarget > 0 ? goal.periodTarget : goal.targetCount;
 
   return (
     <div
@@ -665,7 +668,7 @@ function GoalCard({
             </h2>
           </div>
           <p className="text-sm text-gray-500 mb-3">
-            {goal.targetCount}x {goal.frequency} &middot; {formatPeriod(goal.frequency)}
+            {asked}x {goal.frequency} &middot; {formatPeriod(goal.frequency)}
           </p>
           <div className="flex items-center gap-1.5 flex-wrap">
             <StreakBadge streak={goal.streak} />
@@ -696,7 +699,7 @@ function GoalCard({
                   </button>
                 ) : (
                   <>
-                    {goal.frequency === "daily" && goal.targetCount > 1 && (
+                    {goal.frequency === "daily" && asked > 1 && (
                       <button
                         onClick={() => onCheckIn(goal.id)}
                         disabled={loading}
@@ -737,10 +740,10 @@ function GoalCard({
         </div>
       </div>
 
-      {goal.targetCount > 1 && (
+      {asked > 1 && (
         <div className="mt-3">
           <div className="flex gap-1">
-            {Array.from({ length: goal.targetCount }).map((_, i) => (
+            {Array.from({ length: asked }).map((_, i) => (
               <div
                 key={i}
                 className={`h-1.5 flex-1 rounded-full transition-colors ${
@@ -750,7 +753,7 @@ function GoalCard({
             ))}
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            {goal.completedThisPeriod}/{goal.targetCount} {label}
+            {goal.completedThisPeriod}/{asked} {label}
           </p>
         </div>
       )}

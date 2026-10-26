@@ -69,10 +69,8 @@ export const CARRYOVER_WINDOW_MIN = 3 * 60;
 /**
  * One nudge day under evaluation, with the clock expressed in that day's own minutes.
  *
- * `carryover` marks the pass for a day that has already ended on the calendar. Only habits whose
- * ladder actually overhangs midnight are still in play on it - without that filter every habit
- * missed yesterday would be reconsidered after midnight and, with nowMin past all of its slots,
- * would immediately owe a partner alert for a day that already had one.
+ * `carryover` marks the pass for a day that has already ended on the calendar. Time is measured
+ * from that day's midnight, so 00:20 reads as 1460.
  */
 export interface NudgeAnchor {
   date: string;
@@ -89,9 +87,11 @@ export interface NudgeAnchor {
  * yesterday's midnight so 00:20 reads as 1460. The lookback is bounded by CARRYOVER_WINDOW_MIN,
  * so for all but ~3 hours of the day this returns a single anchor and costs nothing.
  *
- * Shared by the dispatch tick and the inbound reply handler, which must agree on what "currently
- * nudging" means - a reply at 00:15 is an answer to the text that went out at 00:10, and the
- * handler can only see that habit if it looks at the same two days the sender did.
+ * Dispatch and inbound both walk these anchors, and then they part ways. Dispatch looks at every
+ * unfinished habit on the carryover pass, because the "didn't finish today" text waits for
+ * midnight and this is the pass that sends it. It does not replay texts or place new calls unless
+ * the ladder itself overhangs (`crossesMidnight`). Inbound keeps that narrower filter: a reply at
+ * 00:15 answers the text that went out at 00:10, not every habit left open the evening before.
  */
 export function nudgeAnchors(nowMin: number, today: string): NudgeAnchor[] {
   const anchors: NudgeAnchor[] = [
@@ -204,13 +204,35 @@ export function crossesMidnight(nudgeTime?: string, intervalMin?: number | null)
   return ladderEnd(nudgeTime, intervalMin) >= MINUTES_PER_DAY;
 }
 
+// Noon on the nudge day's clock. An alert earlier than this is a ladder that started
+// at midnight and has already crossed into the morning, so it is not held for the
+// *next* midnight. One later than this is still inside the calendar day it would be
+// calling missed.
+const PARTNER_ALERT_MORNING_END = 12 * 60;
+
+/**
+ * When the "didn't finish today" text may actually go out.
+ *
+ * `natural` is the last call plus the half-hour wait. That text is a report that the
+ * day was missed, so it cannot go out while the day is still open: an afternoon or
+ * evening time waits for midnight, and a check-in before that tick still stops it.
+ * A ladder that already runs past midnight keeps the later minute. A ladder that
+ * finishes in the morning, because it started at midnight, is already on the far
+ * side of midnight and stays on its own clock.
+ */
+export function partnerAlertAt(natural: number): number {
+  if (natural >= MINUTES_PER_DAY || natural < PARTNER_ALERT_MORNING_END) return natural;
+  return MINUTES_PER_DAY;
+}
+
 /**
  * The latest minute a snooze may hold this habit and still have the rest of its ladder happen.
  *
  * A hold is a delay, not an exit - the partner alert waits for it rather than being cancelled by
  * it. That's only true while a dispatch tick can still *see* the habit's nudge day, and the
- * window is not open-ended: a ladder that doesn't overhang midnight is dropped from the carryover
- * pass by crossesMidnight, and one that does is dropped once CARRYOVER_WINDOW_MIN is up. A hold
+ * window is not open-ended: a ladder that doesn't overhang midnight is not called again after it
+ * (the carryover pass sends the missed-day text and does not place calls), and one that does is
+ * dropped once CARRYOVER_WINDOW_MIN is up. A hold
  * set beyond that is never cleared by anything, so the calls and the alert it was keeping waiting
  * simply never happen - an exit the user never asked for and nothing records. There *is* a way to
  * ask for one ("pause", which writes a mute and says so), and this is not it.

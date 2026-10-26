@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 import { fakeRedis } from "./redis-fake";
 import { POST as vacationPOST } from "@/app/api/vacation/route";
-import { getStreak, getNudgeCandidates, getGoalHistories } from "@/lib/kv";
+import { getStreak, getNudgeCandidates, getGoalHistories, getGoalStatuses } from "@/lib/kv";
 import { getPendingNudges } from "@/lib/nudges";
 import type { Goal } from "@/lib/types";
 
@@ -151,6 +151,56 @@ describe("scoring a planned vacation week", () => {
     seedVacation(plannedWeek(1));
 
     expect(await getStreak(piano, U)).toBe(3);
+  });
+
+  it("marks the current week done against the vacation target and leaves the stored target alone", async () => {
+    setGoals(goal({ targetCount: 3 }));
+    fakeRedis.seed(`${U}:checkin:piano:2026-08-24`, 1);
+    fakeRedis.seed(`${U}:settings:vacation`, [
+      {
+        startDate: "2026-08-24",
+        endDate: "2026-08-30",
+        goalIds: [],
+        plan: [{ week: "2026-W35", goals: { piano: { targetCount: 1 } } }],
+      },
+    ]);
+
+    const [done] = await getGoalStatuses(U);
+    expect(done.periodTarget).toBe(1);
+    expect(done.isDone).toBe(true);
+    expect(done.completedThisPeriod).toBe(1);
+    expect(done.targetCount).toBe(3);
+
+    fakeRedis.seed(`${U}:settings:vacation`, [
+      {
+        startDate: "2026-08-24",
+        endDate: "2026-08-30",
+        goalIds: [],
+        plan: [{ week: "2026-W35", goals: { piano: { targetCount: 2 } } }],
+      },
+    ]);
+    const [short] = await getGoalStatuses(U);
+    expect(short.periodTarget).toBe(2);
+    expect(short.isDone).toBe(false);
+    expect(short.targetCount).toBe(3);
+  });
+
+  it("does not call a paused vacation week complete", async () => {
+    setGoals(goal({ targetCount: 3 }));
+    fakeRedis.seed(`${U}:checkin:piano:2026-08-24`, 1);
+    fakeRedis.seed(`${U}:settings:vacation`, [
+      {
+        startDate: "2026-08-24",
+        endDate: "2026-08-30",
+        goalIds: ["piano"],
+        plan: [{ week: "2026-W35", goals: { piano: { targetCount: 0 } } }],
+      },
+    ]);
+
+    const [paused] = await getGoalStatuses(U);
+    expect(paused.periodTarget).toBe(0);
+    expect(paused.isDone).toBe(false);
+    expect(paused.targetCount).toBe(3);
   });
 
   it("still breaks the streak on a kept week that missed its reduced target", async () => {

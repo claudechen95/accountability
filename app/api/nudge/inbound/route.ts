@@ -78,6 +78,9 @@ async function POSTHandler(req: Request) {
         const pending: { date: string; carryover: boolean; goal: NudgeCandidate }[] = [];
         for (const a of nudgeAnchors(wallNow, getTodayDate())) {
           const candidates = await getNudgeCandidates(a.date, uid);
+          // Narrower than the dispatch carryover pass on purpose. Dispatch looks at every unfinished
+          // habit after midnight so it can send the missed-day text. A reply is only about a ladder
+          // that is still running; widening this would make a bare "pause" at 00:05 skip the whole day.
           const inPlay = a.carryover
             ? candidates.filter((g) => crossesMidnight(g.nudgeTime, g.nudgeIntervalMin))
             : candidates;

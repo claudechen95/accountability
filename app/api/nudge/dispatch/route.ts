@@ -28,6 +28,7 @@ import {
   callScript,
   nextCallTime,
   crossesMidnight,
+  partnerAlertAt,
   nudgeAnchors,
   MAX_CALL_ATTEMPTS,
   PARTNER_ALERT_DELAY_MIN,
@@ -70,13 +71,17 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   const steps: Step[] = [];
 
   const candidates = await getNudgeCandidates(date, uid);
-  const inPlay = carryover ? candidates.filter((g) => crossesMidnight(g.nudgeTime, g.nudgeIntervalMin)) : candidates;
-  if (inPlay.length === 0) return steps;
+  // The carryover pass still sees every unfinished habit. The "didn't finish today" text waits
+  // for midnight, and this is the pass that can send it. Texts and new calls do not: replaying
+  // them here would resend the whole evening. `ladderStillRunning` is that split.
+  if (candidates.length === 0) return steps;
+  const ladderStillRunning = (g: { nudgeTime?: string; nudgeIntervalMin?: number | null }) =>
+    !carryover || crossesMidnight(g.nudgeTime, g.nudgeIntervalMin);
 
   // A habit the user has already answered about is out of the ladder entirely - no texts, no
   // calls, and no place in the partner alert (see isNudgeMuted). Filtered here, once, so every
   // step below works off a single list of habits that are genuinely still outstanding.
-  const due = getPendingNudges(inPlay, dow, nowMin);
+  const due = getPendingNudges(candidates, dow, nowMin);
   const mutedFlags = await Promise.all(due.map((g) => isNudgeMuted(uid, g.id, date)));
   const pending = due.filter((_, i) => !mutedFlags[i]);
   if (pending.length === 0) return steps;
@@ -106,6 +111,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   // first text on the same tick another habit is being called about.
   const dueTexts: typeof active = [];
   for (const g of active) {
+    if (!ladderStillRunning(g)) continue;
     const indices = dueSlotIndices(nudgeSlots(g.nudgeTime, g.nudgeIntervalMin), nowMin);
     const claims = await Promise.all(indices.map((i) => claimNudgeSlot(uid, g.id, date, i)));
     if (claims.some(Boolean)) dueTexts.push(g);
@@ -153,13 +159,16 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
   };
 
   for (const g of active) {
+    const open = ladderStillRunning(g);
     const start = habitCallStart(g.nudgeTime, g.nudgeIntervalMin);
-    if (nowMin < start) {
+    if (open && nowMin < start) {
       attemptsRemain = true; // its texts are still running
       continue;
     }
-    await claimEscalation(uid, date, nowMin);
-    if (!callable) continue;
+    // A closed ladder already claimed this in the evening. Claiming it again after midnight
+    // would stamp "now" over the real time and pull the partner text off the evening's clock.
+    if (open) await claimEscalation(uid, date, nowMin);
+    if (open && !callable) continue;
 
     const attempts = await getCallAttempts(uid, g.id, date, MAX_CALL_ATTEMPTS);
     const last = attempts[attempts.length - 1];
@@ -179,6 +188,9 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
         continue;
       }
     }
+
+    // The evening is over. Do not start a new call at 12:10 for a ladder that finished at 10.
+    if (!open) continue;
 
     const nextAt = nextCallTime(attempts.length, last?.at ?? null, start);
     if (nextAt == null) continue; // this habit's attempts are spent
@@ -215,11 +227,13 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
     return steps;
   }
 
-  // Step 5, once no habit has a call attempt left. The countdown runs from the last attempt
-  // placed, falling back to the escalation time when nothing could be dialled at all.
+  // Step 5, once no habit has a call attempt left. The text says the day was missed, so an
+  // afternoon or evening time waits for midnight (`partnerAlertAt`). A check-in before that
+  // tick removes the habit from `active` and the text never goes out. The countdown still runs
+  // from the last attempt placed, falling back to the escalation time when nothing was dialled.
   if (attemptsRemain) return steps;
   const base = lastAttemptAt ?? (await getEscalationTime(uid, date));
-  if (base != null && nowMin >= base + PARTNER_ALERT_DELAY_MIN) {
+  if (base != null && nowMin >= partnerAlertAt(base + PARTNER_ALERT_DELAY_MIN)) {
     if (user.partnerPhone && (await claimPartnerAlert(uid, date))) {
       // Muted habits are already out of `pending`, so the alert names only what the user never
       // answered about - answering is a full exit, not a mute on your own phone.
@@ -235,7 +249,7 @@ async function runLadder(user: UserRecord, anchor: NudgeAnchor): Promise<Step[]>
 // Triggered every 10 minutes by an external cron-job.org schedule (see CLAUDE.md). The window
 // has to cover every hour a ladder can run in, which since habits may be configured past 22:00
 // means round the clock rather than the 8am–11pm it used to be: a 23:30 habit's third text lands
-// at 00:10 and its partner alert at 01:00.
+// at 00:10 and its partner alert at 01:10.
 //
 // Secured with a plain shared secret rather than a signing scheme since the caller is a plain
 // HTTP cron service, not a webhook provider with its own verification SDK.

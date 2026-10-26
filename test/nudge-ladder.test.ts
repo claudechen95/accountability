@@ -150,7 +150,7 @@ describe("the nudge ladder over a full day", () => {
       `20:50 call→${PHONE}`,
       `21:00 call→${PHONE}`,
       `21:10 call→${PHONE}`,
-      `21:40 text→${PARTNER}`,
+      `24:00 text→${PARTNER}`,
     ]);
   });
 
@@ -195,7 +195,7 @@ describe("calling until someone picks up", () => {
 
   it("stops calling once a person answers, and lets them off the partner alert", async () => {
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       // The 20:50 call connects; every tick after that sees a reached call.
       if (at === "21:00") phone.outcome = "reached";
@@ -232,7 +232,7 @@ describe("calling until someone picks up", () => {
   it("delays the partner alert to 30 min after the last call, not the first", async () => {
     const log = await runDay();
     expect(log).toContain(`21:10 call→${PHONE}`);
-    expect(log).toContain(`21:40 text→${PARTNER}`);
+    expect(log).toContain(`24:00 text→${PARTNER}`);
     // 30 min after the *first* attempt would have been 21:20.
     expect(log).not.toContain(`21:20 text→${PARTNER}`);
   });
@@ -289,7 +289,7 @@ describe("muting a habit for the day", () => {
 
   it("muting mid-evening drops the remaining texts, the call and the partner alert", async () => {
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       if (at === "19:00") fakeRedis.seed(`tester:nudge:muted:salad:${TODAY}`, 1);
       const seen = { t: texts.length, c: calls.length };
@@ -309,7 +309,7 @@ describe("muting a habit for the day", () => {
       { ...salad, id: "journal", name: "Video Journal", nudgeTime: "21:00" },
     ]);
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       // "Pause" at 11:56 answers the 11:00 Nature text, and nothing else - Video Journal's
       // ladder does not open until 21:00.
@@ -327,7 +327,7 @@ describe("muting a habit for the day", () => {
       `21:50 call→${PHONE}`,
       `22:00 call→${PHONE}`,
       `22:10 call→${PHONE}`,
-      `22:40 text→${PARTNER}`,
+      `24:00 text→${PARTNER}`,
     ]);
     // And the habit the user actually answered about is the only one left out of the alert.
     expect(texts.at(-1)!.body).toBe("📢 Tester didn't finish today: 🥗 Video Journal");
@@ -337,7 +337,7 @@ describe("muting a habit for the day", () => {
   // so "pause" only exists in the two of them together. Seeding the key tests the second half.
   it("ends that habit's day when the reply checks it in", async () => {
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       if (at === "18:10") await replyFromUser("done 1");
       const seen = { t: texts.length, c: calls.length };
@@ -354,7 +354,7 @@ describe("muting a habit for the day", () => {
 
   it("ends that habit's day when the mute arrives as a texted pause", async () => {
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       // Answering the 18:00 text with a deliberate skip rather than a time.
       if (at === "18:10") await replyFromUser("pause 1");
@@ -374,7 +374,7 @@ describe("muting a habit for the day", () => {
       { ...salad, id: "gym", name: "Gym", nudgeTime: "18:00", nudgeNumber: 2 },
     ]);
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       if (at === "18:10") await replyFromUser("pause 1");
       const seen = { t: texts.length, c: calls.length };
@@ -389,7 +389,7 @@ describe("muting a habit for the day", () => {
       `20:50 call→${PHONE}`,
       `21:00 call→${PHONE}`,
       `21:10 call→${PHONE}`,
-      `21:40 text→${PARTNER}`,
+      `24:00 text→${PARTNER}`,
     ]);
     // Gym's ladder ran untouched, and the alert is about Gym alone.
     expect(texts.at(-1)!.body).toBe("📢 Tester didn't finish today: 🥗 Gym");
@@ -414,7 +414,7 @@ describe("snoozing until a time", () => {
   // picks back up afterwards: the 20:40 text, the calls, and the partner alert all still happen.
   it("skips the reminders that fall during the hold and resumes after it", async () => {
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       if (at === "18:10") fakeRedis.seed(`tester:nudge:snoozed-until:salad:${TODAY}`, 19 * 60 + 30);
       const seen = { t: texts.length, c: calls.length };
@@ -428,7 +428,7 @@ describe("snoozing until a time", () => {
       `20:50 call→${PHONE}`,
       `21:00 call→${PHONE}`,
       `21:10 call→${PHONE}`,
-      `21:40 text→${PARTNER}`,
+      `24:00 text→${PARTNER}`,
     ]);
   });
 
@@ -436,7 +436,7 @@ describe("snoozing until a time", () => {
   // call time still gets its three attempts, and the partner alert moves with them.
   it("holds the calls too, then runs them once the time has passed", async () => {
     const log: string[] = [];
-    for (let m = toMin("08:00"); m <= toMin("23:00"); m += 10) {
+    for (let m = toMin("08:00"); m <= toMin("26:00"); m += 10) {
       const at = fmt(m);
       if (at === "18:10") fakeRedis.seed(`tester:nudge:snoozed-until:salad:${TODAY}`, 21 * 60);
       const seen = { t: texts.length, c: calls.length };
@@ -449,7 +449,7 @@ describe("snoozing until a time", () => {
       `21:00 call→${PHONE}`,
       `21:10 call→${PHONE}`,
       `21:20 call→${PHONE}`,
-      `21:50 text→${PARTNER}`,
+      `24:00 text→${PARTNER}`,
     ]);
   });
 
@@ -497,12 +497,12 @@ describe("snoozing until a time", () => {
     }
     expect(log).toEqual([
       `18:00 text→${PHONE}`,
-      // Held to 23:00 rather than 01:00: the remaining texts are skipped, then the call ladder
-      // and the partner alert happen inside the nudge day they belong to.
+      // Held to 23:00 rather than 01:00: the remaining texts are skipped, the calls finish
+      // that evening, and the missed-day text goes out at midnight.
       `23:00 call→${PHONE}`,
       `23:10 call→${PHONE}`,
       `23:20 call→${PHONE}`,
-      `23:50 text→${PARTNER}`,
+      `24:00 text→${PARTNER}`,
     ]);
   });
 
@@ -600,8 +600,37 @@ describe("per-habit scheduling", () => {
       `21:50 call→${PHONE}`,
       `22:00 call→${PHONE}`,
       `22:10 call→${PHONE}`,
-      `22:40 text→${PARTNER}`,
+      `24:00 text→${PARTNER}`,
     ]);
+  });
+
+  // The day is not missed at 10:40pm. Video Journal's ladder finishes its calls at 22:10 and
+  // the partner text used to leave then; a check-in before midnight has to be able to stop it.
+  it("waits until midnight to say a 9pm habit was missed", async () => {
+    fakeRedis.seed("tester:goals", [
+      { ...salad, id: "journal", name: "Video Journal", emoji: "📝", nudgeTime: "21:00" },
+    ]);
+    const log = await runDay();
+    expect(log).not.toContain(`22:40 text→${PARTNER}`);
+    expect(log.filter((l) => l.includes(PARTNER))).toEqual([`24:00 text→${PARTNER}`]);
+    expect(texts.at(-1)!.body).toBe("📢 Tester didn't finish today: 📝 Video Journal");
+  });
+
+  it("drops that midnight text when the habit is checked in at 11:30pm", async () => {
+    fakeRedis.seed("tester:goals", [
+      { ...salad, id: "journal", name: "Video Journal", nudgeTime: "21:00" },
+    ]);
+    const log: string[] = [];
+    for (let m = toMin("21:00"); m <= toMin("26:00"); m += 10) {
+      const at = fmt(m);
+      if (at === "23:30") fakeRedis.seed(`tester:checkin:journal:${TODAY}`, 1);
+      const seen = { t: texts.length, c: calls.length };
+      await tickAt(at);
+      for (const t of texts.slice(seen.t)) log.push(`${at} text→${t.to}`);
+      for (const c of calls.slice(seen.c)) log.push(`${at} call→${c.to}`);
+    }
+    expect(log.filter((l) => l.includes(PARTNER))).toEqual([]);
+    expect(log).toContain(`22:10 call→${PHONE}`);
   });
 });
 
@@ -657,15 +686,15 @@ describe("a ladder that runs past midnight", () => {
     expect(log).toEqual([`23:30 text→${PHONE}`, `23:50 text→${PHONE}`, `24:10 text→${PHONE}`]);
   });
 
-  // The expensive way to get the lookback wrong: reconsider *every* habit missed yesterday once
-  // the clock passes midnight. Their ladders are long finished and every slot reads as past, so
-  // each would immediately owe a second partner alert for a day that already had one.
-  it("doesn't reopen an ordinary evening habit's ladder after midnight", async () => {
-    // Salad nudges at 18:00 and its ladder is done by 21:40. Run the whole day, then keep
-    // ticking into the small hours.
+  // The missed-day text waits for midnight, and that is the only thing an ordinary evening
+  // habit still owes after the clock rolls over. Replaying its texts or placing a new call
+  // there would resend the whole evening, and a second partner text would mean the claim failed.
+  it("sends the missed-day text once at midnight and does not replay the evening", async () => {
     const log = await runDay();
-    expect(log.filter((l) => l.includes(PARTNER))).toEqual([`21:40 text→${PARTNER}`]);
-    expect(log.filter((l) => toMin(l.slice(0, 5)) >= toMin("24:00"))).toEqual([]);
+    expect(log.filter((l) => l.includes(PARTNER))).toEqual([`24:00 text→${PARTNER}`]);
+    expect(log.filter((l) => toMin(l.slice(0, 5)) >= toMin("24:00"))).toEqual([
+      `24:00 text→${PARTNER}`,
+    ]);
   });
 
   it("starts the new day's ladder without help from the old one", async () => {
@@ -675,7 +704,7 @@ describe("a ladder that runs past midnight", () => {
     // 09:00 the next morning: a fresh day, and the habit is pending again.
     await tickAt(`${24 + 9}:00`);
     expect(texts.length).toBe(before + 1);
-  });
+  }, 20_000);
 });
 
 describe("a habit with its own gap between texts", () => {
@@ -742,7 +771,11 @@ describe("idempotence", () => {
     for (let i = 0; i < 10; i++) await tickAt("22:20");
     expect(calls).toHaveLength(3);
 
+    // 22:50 is when the partner text used to go out. It now waits for midnight, and ten
+    // replays of that tick still send it exactly once.
     for (let i = 0; i < 10; i++) await tickAt("22:50");
+    expect(texts.filter((t) => t.to === PARTNER)).toHaveLength(0);
+    for (let i = 0; i < 10; i++) await tickAt("24:00");
     expect(texts.filter((t) => t.to === PARTNER)).toHaveLength(1);
   });
 

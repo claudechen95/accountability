@@ -9,6 +9,7 @@ import {
   nextCallTime,
   ladderEnd,
   crossesMidnight,
+  partnerAlertAt,
   maxSnoozeUntil,
   LADDER_TAIL_MIN,
   CALL_RETRY_MIN,
@@ -289,9 +290,9 @@ describe("habitCallStart", () => {
   });
 });
 
-// Which habits the dispatch route has to keep looking at after midnight. Getting this wrong in
-// the permissive direction is expensive: every habit missed yesterday would be reconsidered at
-// 00:00 with its whole ladder already "past", and would owe an immediate second partner alert.
+// Which ladders keep texting and calling after midnight. The missed-day text is separate:
+// an ordinary evening habit still owes that one text at midnight, and must not owe its
+// reminders again. partnerAlertAt is what draws that line.
 describe("crossesMidnight", () => {
   it("is false for every habit that finishes inside its own day", () => {
     for (const t of ["09:00", "18:00", "21:00", "21:30"]) {
@@ -312,13 +313,32 @@ describe("crossesMidnight", () => {
   });
 });
 
+describe("partnerAlertAt", () => {
+  it("holds an afternoon or evening alert until midnight", () => {
+    // 18:00 finishes its calls at 21:10, so the natural text is 21:40. 21:00's is 22:40.
+    expect(partnerAlertAt(ladderEnd("18:00"))).toBe(MINUTES_PER_DAY);
+    expect(partnerAlertAt(ladderEnd("21:00"))).toBe(MINUTES_PER_DAY);
+  });
+
+  it("keeps a ladder that already runs past midnight on that later minute", () => {
+    expect(partnerAlertAt(ladderEnd("22:30"))).toBe(MINUTES_PER_DAY + at("00:10"));
+    expect(partnerAlertAt(ladderEnd("23:30"))).toBe(MINUTES_PER_DAY + at("01:10"));
+  });
+
+  it("leaves a morning ladder that started at midnight on its own clock", () => {
+    // Pushing 02:00 forward would hold it for the *next* midnight.
+    expect(partnerAlertAt(ladderEnd("00:00", 30))).toBe(at("02:00"));
+  });
+});
+
 // How late a snooze may hold a habit. The ceiling exists because a hold the dispatch tick can
 // never clear isn't a delay at all - it cancels the calls and the partner alert and leaves no
 // record of having done so.
 describe("maxSnoozeUntil", () => {
   it("stops before midnight for a ladder that doesn't overhang it", () => {
-    // After 00:00 the carryover pass drops an 18:00 habit, so 23:00 is the latest hold that
-    // still leaves its three calls and the partner alert inside the day.
+    // Calls are not placed after midnight unless the ladder overhangs, so 23:00 is the latest
+    // hold that still leaves the three calls inside the evening. The missed-day text itself
+    // goes out at midnight.
     expect(formatHHMM(maxSnoozeUntil("18:00"))).toBe("23:00");
     expect(maxSnoozeUntil("21:00")).toBe(maxSnoozeUntil("18:00"));
   });

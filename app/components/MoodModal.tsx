@@ -18,13 +18,13 @@ const WHEEL_EMOTIONS = [
   // prevent. Everything here commits to a direction.
   { emoji: "🤔", label: "Confused" },
   { emoji: "😔", label: "Down" },
-  { emoji: "😢", label: "Sad" },
-  { emoji: "😞", label: "Disappointed" },
-  { emoji: "😰", label: "Anxious" },
-  { emoji: "😨", label: "Scared" },
-  { emoji: "😫", label: "Exhausted" },
-  { emoji: "😡", label: "Angry" },
-  { emoji: "😤", label: "Frustrated" },
+  { emoji: "🙁", label: "Sad" },
+  { emoji: "🫤", label: "Disappointed" },
+  { emoji: "😬", label: "Anxious" },
+  { emoji: "😦", label: "Scared" },
+  { emoji: "🥱", label: "Exhausted" },
+  { emoji: "😠", label: "Angry" },
+  { emoji: "😒", label: "Frustrated" },
 ];
 
 // Where the "slide to explore" hint touches down, as wheel positions. Derived from the list
