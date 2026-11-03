@@ -66,9 +66,8 @@ describe("getReflectionPrompt - daily goals", () => {
   });
 
   it("asks about the whole run of misses, not just the last day of it", async () => {
-    // The gap this replaced: the prompt fires on the next check-in and only ever looked at
-    // yesterday, so 22nd-25th produced one reflection filed on the 25th and the three days
-    // inside the run could never be reflected on at all.
+    // Asking only about the latest day left the earlier ones unasked: one reflection on the
+    // last day of the run, and the days inside it never raised.
     seedCheckIns("d", [shift(TODAY, -5)]);
     expect(await getReflectionPrompt(daily("d"), U)).toMatchObject({
       dates: ["2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25"],
@@ -76,9 +75,9 @@ describe("getReflectionPrompt - daily goals", () => {
     });
   });
 
-  it("asks about an older backlog without charging the check-in for it", async () => {
+  it("asks about an older backlog without requiring it", async () => {
     // Yesterday is fine, so nothing has just been lost - but the 23rd was missed and never
-    // answered for, which used to be unreachable once the next day's check-in went in.
+    // answered for. That miss stays optional.
     seedCheckIns("d", [shift(TODAY, -4), shift(TODAY, -2), shift(TODAY, -1)]);
     expect(await getReflectionPrompt(daily("d"), U)).toEqual({
       reason: "missed-day",

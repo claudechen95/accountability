@@ -75,8 +75,8 @@ export interface WeeklyNote {
   updatedAt: number;
 }
 
-// Why we're asking for a reflection before the next check-in. Carries the numbers behind the
-// call so the prompt can say what actually went wrong instead of a generic "you missed this".
+// Why we're asking. Carries the numbers behind the call so the prompt can say what actually
+// went wrong instead of a generic "you missed this".
 export type ReflectionReason =
   // Daily goal: every recent missed day it hasn't been asked about yet, oldest first. A run of
   // misses is one prompt covering all of them, not one prompt for the last day of the run.
@@ -90,10 +90,9 @@ export type ReflectionReason =
   | { reason: "week-missed"; date: string | null; completed: number; target: number };
 
 export type ReflectionPrompt = ReflectionReason & {
-  // Whether the reflection has to be written before the check-in goes through. Required once
-  // the period is already lost (nothing left to salvage, so the only useful move is to name
-  // what happened); optional while the target is still reachable and the user is, right now,
-  // doing the thing we wanted.
+  // Whether saving takes a sentence. Required once the period is already lost. Optional while
+  // the week is still winnable, which keeps the one-tap "Not now". Closing the sheet writes
+  // nothing either way, and a check-in does not wait on it.
   required: boolean;
 };
 

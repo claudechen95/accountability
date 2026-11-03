@@ -1257,11 +1257,8 @@ function getYesterdayDateStr(): string {
 /**
  * How far back the daily prompt looks for misses it hasn't asked about yet.
  *
- * It used to ask about yesterday and nothing else, which left two kinds of miss unreachable: a
- * day in the middle of a run (the prompt fires on the next check-in, so only the run's last day
- * was ever a candidate), and a day whose next check-in came from the history grid's backfill,
- * which doesn't go through the prompt at all. Over 91 days of one daily habit that was 8 and 2
- * days respectively against 5 reflections actually collected.
+ * Asking only about yesterday leaves two kinds of miss unasked: a day in the middle of a run,
+ * and a day whose only later check-in was a history backfill, which never opens the prompt.
  *
  * Bounded rather than open-ended because a reflection written in October about a day in June
  * isn't a reflection, and because a dismissed prompt would otherwise re-ask forever. The window
@@ -1371,7 +1368,8 @@ async function lastMissedWeekDay(
  *
  * The weekly branch re-asks `getReflectionPrompt` rather than re-deriving which week and which
  * day - the choice between last week and this one is the prompt's to make, and two copies of it
- * would drift. It reads pre-check-in state because the client saves the reflection first.
+ * would drift. The client saves the reflection on its own, so this reads the prompt that is
+ * still outstanding.
  */
 async function reflectionDateKeys(goal: Goal, userId?: string): Promise<string[]> {
   if (goal.frequency !== "daily") {
@@ -1400,7 +1398,7 @@ function weeklyTargetFor(
 }
 
 /**
- * Whether to ask for a reflection before this goal's next check-in - and why.
+ * Whether this goal has a reflection waiting, and why. The tracker asks when its page opens.
  *
  * Daily goals: every day is expected, so a day with no check-in is a real miss.
  *
@@ -1409,13 +1407,13 @@ function weeklyTargetFor(
  * doesn't warrant a prompt. We only ask once the miss actually threatens the target:
  *   - `week-behind` - the days still open this week no longer outnumber the days still
  *     needed, so the target is either on a knife's edge (every remaining day must land) or
- *     already out of reach. A knife's edge of one doesn't count: the check-in this prompt
- *     gates is itself the one day still needed, which is a week being finished, not one in
- *     trouble - and for a 1x/week habit it's every week that ends on schedule.
- *   - `week-missed` - last week closed below target. Caught on the first check-in of the new
- *     week, which also caps this to once per week. Without it, a week that quietly ends short
- *     would never be reflected on at all, since the user stops checking in before the
- *     knife's-edge day arrives.
+ *     already out of reach. A knife's edge of one doesn't count: that day is still ahead of
+ *     them, so the week is being finished, not one in trouble. For a 1x/week habit it's every
+ *     week that ends on schedule.
+ *   - `week-missed` - last week closed below target, and nothing is logged yet this week.
+ *     Logging anything this week stands the question down, so it is asked on the visits before
+ *     that first check-in. Without it, a week that quietly ends short would never be reflected
+ *     on at all, since the knife's-edge day may never arrive.
  *
  * Vacation-paused days are neither available nor expected: they're dropped from the days
  * remaining, and the target is prorated down so a partly-paused week can't be "missed" for
@@ -1426,11 +1424,11 @@ function weeklyTargetFor(
  * daily path gets from `getUnreflectedMissedDays`, and load-bearing for the same reason: a
  * reflection is filed under the day it names, so a re-ask overwrites the previous answer.
  *
- * `required` marks the prompts the user can't wave away. A period that's already gone -
+ * `required` marks the prompts with no one-tap "Not now". A period that's already gone -
  * yesterday, a closed-out week, a week whose target is now unreachable - can only be learned
- * from, so writing something is the price of the next check-in. A knife's-edge week is still
- * winnable and the user is checking in as we ask, so that one stays optional; charging them
- * for good behavior is how a prompt turns into noise people click through.
+ * from, so saving it takes a sentence. A knife's-edge week is still winnable, so that one
+ * stays optional. Closing the sheet writes nothing either way, and a check-in does not wait
+ * on it.
  */
 export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<ReflectionPrompt | null> {
   // A graduated habit has no expectations attached to it any more, so it can't be behind on one.
@@ -1448,10 +1446,9 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   if (goal.frequency === "daily") {
     const dates = await getUnreflectedMissedDays(goal, userId);
     if (dates.length === 0) return null;
-    // Yesterday is the day that has only just been lost, so it's the one worth charging the
-    // next check-in for. An older backlog is worth raising but not worth blocking on: the user
-    // is checking in as we ask, and a toll they can't clear by doing the right thing today is
-    // how a prompt turns into something people learn to dismiss.
+    // Yesterday is the day that has only just been lost, so it asks for a sentence. An older
+    // backlog is worth raising and can be set aside: a toll the user can't clear today is how
+    // a prompt turns into something people learn to dismiss.
     const required = dates[dates.length - 1] === getYesterdayDateStr();
     return { reason: "missed-day", dates, required };
   }
@@ -1463,11 +1460,10 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   const target = Math.min(weeklyTargetFor(goal, changes, weekDates, vacationWindows), weekDates.filter((d) => !paused(d)).length);
   const daysLeft = weekDates.filter((d) => d >= today && !paused(d)).length;
   const needed = target - completed;
-  // The prompt fires at check-in, and that check-in counts: with exactly one day still needed
-  // and a day open to land it on, the user is completing the week as we ask, not falling
-  // behind it. A 1x/week habit done on the week's last day - its normal shape - lives entirely
-  // in that case, so without the `needed >= 2` guard it was told it "missed Saturday" every
-  // Sunday it was kept on schedule.
+  // One day still needed, with a day still open, is a week today can still finish. Asking
+  // would call that a miss. A 1x/week habit done on the week's last day lives entirely in
+  // that case, so without `needed >= 2` it is told it missed its day every time it is kept
+  // on schedule.
   if (needed > daysLeft || (needed === daysLeft && needed >= 2)) {
     const { date, answered } = await lastMissedWeekDay(goal, weekDates, paused, userId);
     // The miss this would name has been accounted for, and asking again would only overwrite
@@ -1478,7 +1474,7 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
     return { reason: "week-behind", date, completed, target, daysLeft, required: needed > daysLeft };
   }
 
-  // Nothing logged yet this week, so this is the first check-in since last week closed out.
+  // Nothing logged yet this week, so last week's close is still an open question.
   if (completed === 0) {
     const lastWeekDates = getWeekDatesForDate(addDaysToDateStr(today, -7));
     const lastTarget = Math.min(

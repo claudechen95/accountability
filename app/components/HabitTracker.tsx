@@ -28,6 +28,7 @@ import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
 import { VacationPlanner } from "@/app/components/VacationPlanner";
 import { PushReminders } from "@/app/components/PushReminders";
 import { timedFetch, logFirstData } from "@/lib/client-perf";
+import { loginReflectionToShow } from "@/lib/login-reflection";
 
 const PST = "America/Los_Angeles";
 
@@ -507,14 +508,14 @@ const MIN_REFLECTION_CHARS = 15;
 function ReflectionModal({
   goal,
   prompt,
+  saving,
   onSubmit,
-  onSkip,
   onDismiss,
 }: {
   goal: GoalStatus;
   prompt: ReflectionPrompt;
+  saving: boolean;
   onSubmit: (text: string) => void;
-  onSkip: () => void;
   onDismiss: () => void;
 }) {
   const [text, setText] = useState("");
@@ -523,10 +524,9 @@ function ReflectionModal({
     return () => { document.body.style.overflow = ""; };
   }, []);
 
-  // A required prompt still closes - the user is never trapped in a modal. What it won't do is
-  // hand over the check-in on the way out. Backing out leaves the habit unchecked, so the only
-  // path to the green tick is writing the thing. That's the difference between a required
-  // reflection and the old skip link, which gave away the check-in for a single tap.
+  // A required prompt still closes. The sheet never traps anyone, and it never
+  // checks a habit in. Required only means saving takes a sentence, and there
+  // is no one-tap "Not now".
   const short = text.trim().length < MIN_REFLECTION_CHARS;
   const blocked = prompt.required && short;
   // One reflection answers the whole run, so say so - otherwise the grid filling in several
@@ -577,23 +577,23 @@ function ReflectionModal({
         <div className="flex flex-col gap-2">
           <button
             onClick={() => onSubmit(text)}
-            disabled={blocked}
+            disabled={blocked || !text.trim() || saving}
             className="w-full bg-gray-900 text-white rounded-xl py-2 text-sm font-medium hover:bg-gray-700 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
           >
-            {text.trim() ? "Save & Check In" : "Check In"}
+            Save
           </button>
           {prompt.required ? (
-            <p className="text-xs text-gray-400 text-center">
-              {blocked
-                ? "This one needs a reflection before it counts."
-                : "Checking in will save this reflection."}
-            </p>
+            blocked && (
+              <p className="text-xs text-gray-400 text-center">
+                A sentence is enough to save this.
+              </p>
+            )
           ) : (
             <button
-              onClick={onSkip}
+              onClick={onDismiss}
               className="text-xs text-gray-400 hover:text-gray-600 underline transition-colors"
             >
-              just check in, skip reflection
+              Not now
             </button>
           )}
         </div>
@@ -887,7 +887,17 @@ export function HomePage({
   const [error, setError] = useState<string | null>(null);
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(null);
+  const [reflectionTarget, setReflectionTarget] = useState<GoalStatus | null>(() =>
+    initialGoals
+      ? loginReflectionToShow(initialGoals, { settled: false, advance: false })
+      : null
+  );
+  const [savingReflection, setSavingReflection] = useState(false);
+  // One prompt when the page opens. Closing it settles the visit. Saving
+  // advances to the next habit that still has one.
+  const promptSettled = useRef(false);
+  const promptAdvance = useRef(false);
+  const reflectionsAnswered = useRef(new Set<string>());
   const [moodModalOpen, setMoodModalOpen] = useState(false);
   const [hideDone, setHideDone] = useState(false);
   const [vacation, setVacation] = useState<VacationWindow | null>(initialVacation?.active ?? null);
@@ -946,6 +956,27 @@ export function HomePage({
     fetchVacation();
   }, [fetchGoals, fetchVacation]);
 
+  // The sheet opens from the list the page already has. A later refresh
+  // (check-in, midnight) must not raise it again. Saving is the exception:
+  // that visit is working through the habits that are waiting.
+  useEffect(() => {
+    if (initialLoad) return;
+    // Already on screen, including the one rendered with the page. Mark the
+    // visit settled so closing it does not immediately open the same sheet.
+    if (reflectionTarget) {
+      promptSettled.current = true;
+      return;
+    }
+    const next = loginReflectionToShow(
+      goals,
+      { settled: promptSettled.current, advance: promptAdvance.current },
+      reflectionsAnswered.current
+    );
+    promptSettled.current = true;
+    promptAdvance.current = false;
+    if (next) setReflectionTarget(next);
+  }, [goals, initialLoad, reflectionTarget]);
+
   // Refresh at midnight PST
   useEffect(() => {
     function msUntilMidnightPST(): number {
@@ -990,10 +1021,6 @@ export function HomePage({
 
   const handleCheckIn = (goalId: string) => {
     const goal = goals.find((g) => g.id === goalId);
-    if (!isGoalPaused(goalId) && goal?.reflection && goal.todayCount === 0) {
-      setReflectionTarget(goal);
-      return;
-    }
     if (goal?.type === "mood") {
       setMoodModalOpen(true);
       return;
@@ -1019,34 +1046,33 @@ export function HomePage({
   };
 
   const handleReflectionSubmit = async (text: string) => {
-    if (!reflectionTarget) return;
+    if (!reflectionTarget || savingReflection) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
     const goalId = reflectionTarget.id;
-    const isMood = reflectionTarget.type === "mood";
-    setReflectionTarget(null);
-    if (text.trim()) {
-      await timedFetch(`/api/reflections${q}`, {
+    setSavingReflection(true);
+    try {
+      const res = await timedFetch(`/api/reflections${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goalId, text }),
+        body: JSON.stringify({ goalId, text: trimmed }),
       });
-    }
-    if (isMood) {
-      setMoodModalOpen(true);
-    } else {
-      await doCheckIn(goalId);
+      if (!res.ok) throw new Error("Save failed");
+      reflectionsAnswered.current.add(goalId);
+      promptAdvance.current = true;
+      setReflectionTarget(null);
+      await fetchGoals();
+    } catch {
+      setError("Couldn't save that reflection. Try again.");
+    } finally {
+      setSavingReflection(false);
     }
   };
 
-  const handleReflectionSkip = async () => {
-    if (!reflectionTarget) return;
-    const isMood = reflectionTarget.type === "mood";
-    const goalId = reflectionTarget.id;
+  const handleReflectionDismiss = () => {
+    promptAdvance.current = false;
+    promptSettled.current = true;
     setReflectionTarget(null);
-    if (isMood) {
-      setMoodModalOpen(true);
-    } else {
-      await doCheckIn(goalId);
-    }
   };
 
   const handleUndo = async (goalId: string) => {
@@ -1371,11 +1397,12 @@ export function HomePage({
       {/* Reflection modal */}
       {reflectionTarget?.reflection && (
         <ReflectionModal
+          key={reflectionTarget.id}
           goal={reflectionTarget}
           prompt={reflectionTarget.reflection}
+          saving={savingReflection}
           onSubmit={handleReflectionSubmit}
-          onSkip={handleReflectionSkip}
-          onDismiss={() => setReflectionTarget(null)}
+          onDismiss={handleReflectionDismiss}
         />
       )}
 
