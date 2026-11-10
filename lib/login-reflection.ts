@@ -1,4 +1,28 @@
-import type { GoalStatus } from "./types";
+import type { GoalStatus, ReflectionPrompt } from "./types";
+
+/** The days the open sheet is about. A weekly prompt with no day sends none. */
+export function reflectionSheetDates(prompt: ReflectionPrompt): string[] {
+  if (prompt.reason === "missed-day") return prompt.dates;
+  return prompt.date ? [prompt.date] : [];
+}
+
+/**
+ * Whether two prompts are the same question.
+ *
+ * Counts can move while the sheet is open. The reason and the days it names
+ * cannot, or the text the person is writing is about a different miss.
+ */
+export function sameReflectionPrompt(
+  a: ReflectionPrompt | null | undefined,
+  b: ReflectionPrompt | null | undefined
+): boolean {
+  if (!a || !b || a.reason !== b.reason) return false;
+  if (a.reason === "missed-day" && b.reason === "missed-day") {
+    return a.dates.length === b.dates.length && a.dates.every((date, i) => date === b.dates[i]);
+  }
+  if (a.reason !== "missed-day" && b.reason !== "missed-day") return a.date === b.date;
+  return false;
+}
 
 /**
  * Which habit the tracker asks about when its page opens.

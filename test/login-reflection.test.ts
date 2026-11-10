@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loginReflectionToShow, pickLoginReflection } from "@/lib/login-reflection";
+import {
+  loginReflectionToShow,
+  pickLoginReflection,
+  reflectionSheetDates,
+  sameReflectionPrompt,
+} from "@/lib/login-reflection";
 import type { GoalStatus, ReflectionPrompt } from "@/lib/types";
 
 const missed: ReflectionPrompt = {
@@ -73,5 +78,34 @@ describe("loginReflectionToShow", () => {
     expect(
       loginReflectionToShow(goals, { settled: true, advance: true }, new Set(["saved"]))?.id
     ).toBe("next");
+  });
+});
+
+describe("sameReflectionPrompt", () => {
+  const behind = {
+    reason: "week-behind" as const,
+    date: "2026-08-25",
+    completed: 0,
+    target: 5,
+    daysLeft: 5,
+    required: false,
+  };
+
+  it("treats the same reason and days as the same question when the counts move", () => {
+    expect(sameReflectionPrompt(behind, { ...behind, completed: 1, daysLeft: 4 })).toBe(true);
+    expect(sameReflectionPrompt(missed, { ...missed, required: false })).toBe(true);
+  });
+
+  it("does not match a question that is gone, or one about a different day", () => {
+    expect(sameReflectionPrompt(behind, null)).toBe(false);
+    expect(sameReflectionPrompt(null, behind)).toBe(false);
+    expect(sameReflectionPrompt(behind, { ...behind, date: "2026-08-26" })).toBe(false);
+    expect(sameReflectionPrompt(missed, { ...missed, dates: ["2026-08-24", "2026-08-25"] })).toBe(false);
+  });
+
+  it("sends the days the sheet named, and none when a weekly prompt has no day", () => {
+    expect(reflectionSheetDates(missed)).toEqual(["2026-08-25"]);
+    expect(reflectionSheetDates(behind)).toEqual(["2026-08-25"]);
+    expect(reflectionSheetDates({ ...behind, date: null })).toEqual([]);
   });
 });

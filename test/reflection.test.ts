@@ -166,6 +166,57 @@ describe("saveReflection", () => {
 
     expect(await storedDays("d")).toEqual(["2026-08-25"]);
   });
+
+  it("does not file a second weekly reflection once the week is answered", async () => {
+    // The sheet was still open after the answer, and the server had nothing outstanding, so
+    // the second submit used to land on today.
+    fakeRedis.seed(`${U}:goals`, [weekly("w", 3)]);
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
+    await saveReflection("w", "Weekend got away from me", U);
+    await saveReflection("w", "Said again", U);
+    await saveReflection("w", "Said with the day", U, ["2026-08-23"]);
+
+    const stored = await getReflectionsForGoal("w", ["2026-08-23", TODAY], U);
+    expect(stored).toEqual({ "2026-08-23": "Weekend got away from me" });
+  });
+
+  it("leaves an answered day alone when the sheet names it again", async () => {
+    fakeRedis.seed(`${U}:goals`, [daily("d")]);
+    seedCheckIns("d", [shift(TODAY, -4)]);
+    await saveReflection("d", "Was travelling all week", U);
+    await saveReflection("d", "A shorter retelling", U, ["2026-08-23", "2026-08-24", "2026-08-25"]);
+
+    const stored = await getReflectionsForGoal("d", ["2026-08-23", "2026-08-24", "2026-08-25", TODAY], U);
+    expect(stored).toEqual({
+      "2026-08-23": "Was travelling all week",
+      "2026-08-24": "Was travelling all week",
+      "2026-08-25": "Was travelling all week",
+    });
+  });
+
+  it("does not file a stale sheet onto a day the question has moved to", async () => {
+    fakeRedis.seed(`${U}:goals`, [weekly("w", 7)]);
+    seedCheckIns("w", [0, 1, 2, 3, 4, 5, 6].map(lastWeekDay));
+    await saveReflection("w", "Tuesday got away from me", U, ["2026-08-25"]);
+
+    vi.setSystemTime(new Date("2026-08-27T18:00:00Z"));
+    try {
+      await saveReflection("w", "Still about Tuesday", U, ["2026-08-25"]);
+      expect(await getReflectionPrompt(weekly("w", 7), U)).toMatchObject({ date: "2026-08-26" });
+      const stored = await getReflectionsForGoal("w", ["2026-08-25", "2026-08-26", "2026-08-27"], U);
+      expect(stored).toEqual({ "2026-08-25": "Tuesday got away from me" });
+    } finally {
+      vi.setSystemTime(NOW);
+    }
+  });
+
+  it("still files the named day when the sheet names none and nothing is answered", async () => {
+    fakeRedis.seed(`${U}:goals`, [weekly("w", 3)]);
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
+    await saveReflection("w", "Weekend got away from me", U, []);
+
+    expect(await storedDays("w")).toEqual(["2026-08-23"]);
+  });
 });
 
 describe("getReflectionPrompt - weekly goals", () => {
@@ -291,6 +342,24 @@ describe("getReflectionPrompt - weekly goals", () => {
     expect(await getReflectionPrompt(weekly("w", 3), U)).toBeNull();
   });
 
+  it("does not re-ask at the week's close when an earlier day of that week was answered", async () => {
+    // Sunday is the day the close-out would name, and it is empty. Thursday already holds the
+    // answer from while the week was running, so Monday is not a second question.
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
+    seedReflection("w", lastWeekDay(3));
+    expect(await getReflectionPrompt(weekly("w", 3), U)).toBeNull();
+  });
+
+  it("still asks about last week when the only reflection is on today", async () => {
+    // A reflection filed on today is not an answer for last week. It must not settle the close-out.
+    seedCheckIns("w", [lastWeekDay(0), lastWeekDay(1)]);
+    seedReflection("w", "2026-08-26");
+    expect(await getReflectionPrompt(weekly("w", 3), U)).toMatchObject({
+      reason: "week-missed",
+      date: "2026-08-23",
+    });
+  });
+
   it("never names a paused day, even though nothing was logged on it", async () => {
     // Tuesday was vacation, so it's not a miss - Monday is the last day actually expected.
     seedCheckIns("w", [shift("2026-08-26", -30)]);
@@ -316,6 +385,24 @@ describe("getReflectionPrompt - weekly goals", () => {
       completed: 0,
       target: 5,
       daysLeft: 5,
+    });
+  });
+
+  it("stands down a behind week with no day to name once this week has an answer", async () => {
+    // Today is never a candidate, so filing the answer on today used to leave the prompt up.
+    fakeRedis.seed(`${U}:goals`, [weekly("w", 7)]);
+    seedCheckIns("w", [shift("2026-08-26", -30)]);
+    fakeRedis.seed(`${U}:settings:vacation`, [
+      { startDate: weekDay(0), endDate: weekDay(1), goalIds: ["w"] },
+    ]);
+    await saveReflection("w", "Nothing had closed yet", U, []);
+    expect(await getReflectionsForGoal("w", ["2026-08-26"], U)).toEqual({
+      "2026-08-26": "Nothing had closed yet",
+    });
+    expect(await getReflectionPrompt(weekly("w", 7), U)).toBeNull();
+    await saveReflection("w", "Said again", U, []);
+    expect(await getReflectionsForGoal("w", ["2026-08-26"], U)).toEqual({
+      "2026-08-26": "Nothing had closed yet",
     });
   });
 

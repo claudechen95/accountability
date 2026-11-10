@@ -1320,14 +1320,13 @@ async function getUnreflectedMissedDays(goal: Goal, userId?: string): Promise<st
  * up. That leaves a `null` date genuinely possible (a week that's already out of reach on the
  * Monday), and callers have to keep the week's counts for it.
  *
- * `answered` reports that the day this would name already carries a reflection - and the
- * callers stand the prompt down on it, because a reflection is filed under the day it names,
- * so a re-ask forces a re-answer that overwrites the one already given. A behind week used to
- * re-name its missed Friday on every later day's check-in that way. Standing down on the named
- * day alone, rather than walking back to older unanswered days, is deliberate: unfilled days
- * aren't individually misses here (a perfect 3x week still has four empty days - the whole
- * premise of the weekly rules), so the question is the week's, and one answer settles it. A
- * *new* miss after the answer becomes the last missed day, unanswered, and re-opens it.
+ * `answered` reports that the day this would name already carries a reflection. A week that is
+ * still running stands down on that day. A new miss after the answer becomes the last missed
+ * day and re-opens the question. Standing down on the named day, rather than walking back to
+ * older unfilled days, is deliberate: unfilled days aren't individually misses here (a perfect
+ * 3x week still has four empty days, the whole premise of the weekly rules). A closed week is
+ * settled by a reflection on any of its days, which the caller checks separately, because the
+ * day this would name can be a later empty day than the one that was answered.
  */
 async function lastMissedWeekDay(
   goal: Goal,
@@ -1363,22 +1362,46 @@ async function lastMissedWeekDay(
  * reflection is *shown* is a separate question with a different answer - the history grid keys
  * by the day it was written (`getReflectionsByWrittenDay`).
  *
- * Both fall back to the day it was written when there's nothing outstanding to file against (a
- * dismissed prompt re-opened, a stale tab), which is where a weekly reflection always landed.
+ * A daily habit falls back to yesterday when nothing is outstanding, so a dismissed prompt
+ * re-opened after a backfill still keeps the text. A weekly habit falls back to today only
+ * when neither this week nor last week already has an answer. A second submit of a question
+ * that was already answered writes nothing, and it does not land on today.
  *
  * The weekly branch re-asks `getReflectionPrompt` rather than re-deriving which week and which
- * day - the choice between last week and this one is the prompt's to make, and two copies of it
- * would drift. The client saves the reflection on its own, so this reads the prompt that is
- * still outstanding.
+ * day. The choice between last week and this one is the prompt's to make, and two copies of it
+ * would drift. This is the path when the sheet did not name its days. The days a sheet did
+ * name are written by `saveReflection` directly, so a stale sheet cannot land on a later day.
  */
 async function reflectionDateKeys(goal: Goal, userId?: string): Promise<string[]> {
   if (goal.frequency !== "daily") {
     const prompt = await getReflectionPrompt(goal, userId);
-    const date = prompt && prompt.reason !== "missed-day" ? prompt.date : null;
-    return [date ?? getTodayDate()];
+    if (prompt && prompt.reason !== "missed-day") return [prompt.date ?? getTodayDate()];
+    if (await openWeekAlreadyAnswered(goal.id, userId)) return [];
+    return [getTodayDate()];
   }
   const missed = await getUnreflectedMissedDays(goal, userId);
   return missed.length > 0 ? missed : [getYesterdayDateStr()];
+}
+
+/** True when any of `dates` already carries a reflection. */
+async function anyReflection(goalId: string, dates: string[], userId?: string): Promise<boolean> {
+  if (dates.length === 0) return false;
+  const found = await getReflectionsForGoal(goalId, dates, userId);
+  return dates.some((date) => Boolean(found[date]));
+}
+
+/**
+ * A weekly fallback must not invent a second reflection on today once this week or last week
+ * already holds one. A reflection filed on today does not count as last week's answer for the
+ * prompt itself. That check stays on last week's dates.
+ */
+async function openWeekAlreadyAnswered(goalId: string, userId?: string): Promise<boolean> {
+  const today = getTodayDate();
+  return anyReflection(
+    goalId,
+    [...getWeekDatesForDate(today), ...getWeekDatesForDate(addDaysToDateStr(today, -7))],
+    userId
+  );
 }
 
 /**
@@ -1419,10 +1442,14 @@ function weeklyTargetFor(
  * remaining, and the target is prorated down so a partly-paused week can't be "missed" for
  * days the user was never asked to show up on.
  *
- * Either weekly reason stands down once the day it would name already carries a reflection
- * (`lastMissedWeekDay`'s `answered`) - the weekly form of the asked-and-answered rule the
- * daily path gets from `getUnreflectedMissedDays`, and load-bearing for the same reason: a
- * reflection is filed under the day it names, so a re-ask overwrites the previous answer.
+ * While a week is still running, `week-behind` stands down once the day it would name already
+ * carries a reflection. A new day that closes unfilled reopens the question about that day.
+ * A week that has already closed (`week-missed`) stands down if any day of that week carries
+ * a reflection: the close-out is the same question, and the day it would name now can be a
+ * later empty day than the one that was answered. A `week-behind` prompt with no day to name
+ * stands down once any day of this week carries a reflection. Today is never a candidate, so
+ * without that the prompt would return on every visit. A reflection is filed under the day it
+ * is about, and a day that already has an answer is left as it is.
  *
  * `required` marks the prompts with no one-tap "Not now". A period that's already gone -
  * yesterday, a closed-out week, a week whose target is now unreachable - can only be learned
@@ -1466,10 +1493,11 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
   // on schedule.
   if (needed > daysLeft || (needed === daysLeft && needed >= 2)) {
     const { date, answered } = await lastMissedWeekDay(goal, weekDates, paused, userId);
-    // The miss this would name has been accounted for, and asking again would only overwrite
-    // the answer. The week stays behind, so without this the prompt re-fired on every later
-    // day of it.
+    // The miss this would name has been accounted for. The week stays behind, so without this
+    // the prompt returns on every later day of it. A prompt with no day to name has nothing
+    // to attach that check to, so any reflection already on this week settles it instead.
     if (answered) return null;
+    if (date === null && (await anyReflection(goal.id, weekDates, userId))) return null;
     // Still winnable if every remaining day lands; only forced once it can't be.
     return { reason: "week-behind", date, completed, target, daysLeft, required: needed > daysLeft };
   }
@@ -1485,9 +1513,9 @@ export async function getReflectionPrompt(goal: Goal, userId?: string): Promise<
     const lastCompleted = await getWeeklyDaysCompleted(goal.id, lastWeekDates, userId);
     if (lastCompleted < lastTarget) {
       const { date, answered } = await lastMissedWeekDay(goal, lastWeekDates, paused, userId);
-      // A week whose miss was reflected on while it was still running (via week-behind) was
-      // answered for in the moment; its close-out isn't a second question.
-      if (answered) return null;
+      // One answer settles the closed week, whichever of its days holds it. The day this
+      // would name now can be a later empty day than the one that was answered.
+      if (answered || (await anyReflection(goal.id, lastWeekDates, userId))) return null;
       return { reason: "week-missed", date, completed: lastCompleted, target: lastTarget, required: true };
     }
   }
@@ -1601,14 +1629,34 @@ export async function getReflectionsByWrittenDay(
 
 // --- Reflections ---
 
-export async function saveReflection(goalId: string, text: string, userId?: string): Promise<void> {
+const REFLECTION_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export async function saveReflection(
+  goalId: string,
+  text: string,
+  userId?: string,
+  aboutDates?: string[]
+): Promise<void> {
   const goals = await getGoals(userId);
   const goal = goals.find((g) => g.id === goalId);
   if (!goal) return;
-  const value = { text, savedAt: Date.now() };
-  const dates = await reflectionDateKeys(goal, userId);
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  // Days the open sheet named win. They are not re-derived, so a sheet whose question has
+  // moved on cannot file its old text onto the new day. An empty list derives, which is how
+  // a weekly sheet with no day, and a caller that did not send days, still land somewhere.
+  const requested = aboutDates?.filter((date) => REFLECTION_DATE.test(date));
+  const dates =
+    requested && requested.length > 0
+      ? Array.from(new Set(requested)).slice(0, 14)
+      : await reflectionDateKeys(goal, userId);
+  if (dates.length === 0) return;
+  const existing = await getReflectionsForGoal(goal.id, dates, userId);
+  const open = dates.filter((date) => !existing[date]);
+  if (open.length === 0) return;
+  const value = { text: trimmed, savedAt: Date.now() };
   await Promise.all(
-    dates.map(async (date) => {
+    open.map(async (date) => {
       const key = k(userId, `reflection:${goalId}:${date}`);
       await kv.set(key, value);
       invalidate(key);

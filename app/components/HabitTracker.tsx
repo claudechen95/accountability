@@ -28,7 +28,11 @@ import { EmotionWheel, MoodModal } from "@/app/components/MoodModal";
 import { VacationPlanner } from "@/app/components/VacationPlanner";
 import { PushReminders } from "@/app/components/PushReminders";
 import { timedFetch, logFirstData } from "@/lib/client-perf";
-import { loginReflectionToShow } from "@/lib/login-reflection";
+import {
+  loginReflectionToShow,
+  reflectionSheetDates,
+  sameReflectionPrompt,
+} from "@/lib/login-reflection";
 
 const PST = "America/Los_Angeles";
 
@@ -961,9 +965,18 @@ export function HomePage({
   // that visit is working through the habits that are waiting.
   useEffect(() => {
     if (initialLoad) return;
-    // Already on screen, including the one rendered with the page. Mark the
-    // visit settled so closing it does not immediately open the same sheet.
+    // Already on screen, including the one rendered with the page. A refresh
+    // that no longer has this question closes it without writing, so a sheet
+    // left open on another screen does not get answered twice. The next habit
+    // waits for the next visit rather than appearing under the person.
     if (reflectionTarget) {
+      const current = goals.find((g) => g.id === reflectionTarget.id);
+      if (!sameReflectionPrompt(current?.reflection, reflectionTarget.reflection)) {
+        promptAdvance.current = false;
+        promptSettled.current = true;
+        setReflectionTarget(null);
+        return;
+      }
       promptSettled.current = true;
       return;
     }
@@ -1001,6 +1014,16 @@ export function HomePage({
     scheduleRefresh();
     return () => clearTimeout(timeout);
   }, [fetchGoals, fetchVacation]);
+
+  // A phone that was backgrounded while the sheet was open learns, on return,
+  // that another screen already answered. The listener does not fire on load.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === "visible") fetchGoals();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [fetchGoals]);
 
   const doCheckIn = async (goalId: string) => {
     setLoading(true);
@@ -1055,7 +1078,13 @@ export function HomePage({
       const res = await timedFetch(`/api/reflections${q}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goalId, text: trimmed }),
+        body: JSON.stringify({
+          goalId,
+          text: trimmed,
+          dates: reflectionTarget.reflection
+            ? reflectionSheetDates(reflectionTarget.reflection)
+            : [],
+        }),
       });
       if (!res.ok) throw new Error("Save failed");
       reflectionsAnswered.current.add(goalId);
